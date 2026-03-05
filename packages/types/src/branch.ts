@@ -15,9 +15,9 @@ export type BranchId = z.infer<typeof BranchIdSchema>;
  * turn they were sent from — subject to plugin-defined rules (e.g. a robber
  * must move to a hex and rob; units may attack or move; Risk limits attacks
  * after a time hop). Arrival actions execute in the pending timeline's context:
- * a robber that arrives must choose a target and steal a card from that
- * player's hand in the pending timeline (the stolen card has no effect until
- * crystallization). Side effects that belong solely to the source timeline
+ * a robber that arrives must choose a target and steal a card — the card
+ * immediately changes hands in the pending timeline's state (subsequent
+ * arrivals see the updated hands), but cannot be played until crystallization. Side effects that belong solely to the source timeline
  * (e.g. resource discards triggered by a 7-roll) do not carry over to the
  * pending board.
  *

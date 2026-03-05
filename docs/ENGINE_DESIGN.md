@@ -142,11 +142,17 @@ A submitted move order successfully resolves into a past timestate. The adjudica
 3. When the governing window closes → the pending branch **crystallizes** into a new live timeline
 4. The new timeline begins accepting turns from the turn after its starting timestate
 
-### Frozen vs. Live
+### Arrival Actions
 
-Pending branches are fully frozen by default — no turns advance, no resources produce, no actions occur while pending. This is the default for Colonist and the baseline for all games.
+When entities arrive at a pending branch they complete the **actions of the turn they were sent from**, subject to plugin-defined rules. These actions execute in the pending timeline's context:
 
-Theater of War and Conquest may configure **limited-live** mode for pending branches (via the n+1 window's response turn), but full live advancement does not occur until crystallization.
+- A Colonist robber that arrives must choose a target and steal a card — the card immediately changes hands in the pending timeline's state (subsequent arrivals see the updated hands), but cannot be played until crystallization
+- Units in Theater of War or Conquest complete their movement or combat
+- The window provides arrival ordering: each arriver executes against the state left by all prior arrivals, then is inactive
+
+Side effects that belong solely to the source timeline (e.g. resource discards from a 7-roll) do not carry over to the pending board. What constitutes a legal arrival action is defined by the plugin's action validator.
+
+After completing arrival actions, entities are **inactive** — no further actions occur until crystallization triggers the first full turn on the new timeline.
 
 ### Arrival Policy
 
