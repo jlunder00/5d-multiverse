@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "paths": {
+      "@5d/types": ["../types/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
