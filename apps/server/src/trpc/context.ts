@@ -8,7 +8,7 @@ export interface Context {
 }
 
 export function createContext(db: DB) {
-  return async (req: FastifyRequest, res: FastifyReply): Promise<Context> => ({
+  return async ({ req, res }: { req: FastifyRequest; res: FastifyReply }): Promise<Context> => ({
     req,
     res,
     db,
