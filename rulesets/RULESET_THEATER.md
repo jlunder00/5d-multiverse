@@ -46,27 +46,38 @@ All timelines inherit the same turn order from their branching point. Therefore:
 Players take turns in a fixed sequential order within each timeline (e.g. Germany → USSR → UK → USA → Japan). This order never changes.
 
 ### 2.2 The Sliding Window
-Time-travel moves do not create branches immediately. They are **committed** during a player's turn and **resolve** at the end of the current sliding window.
+Time-travel moves do not create branches immediately. They are **committed** during a player's turn and **resolve** at the end of the governing sliding window.
 
-- The sliding window spans **n+1 turns**, where n is the number of players
-- The turn sequence is continuous: G, R, U, A, J, G, R, U, A, J, ...
-- A window resolves every n+1 turns
-- The **starting player** of a window occupies both position 1 (first, blind) and position n+1 (last, with full knowledge of all others' declarations and the opportunity to augment their committed moves before resolution)
+Each pending branch has its own independent window. The window is always **n turns long** — exactly one full round.
 
-**Example (5 players: G, R, U, A, J):**
+- **Window opens** on the turn of the player who initiates the pending branch (commits units to a past timestate)
+- **Window duration**: every other player gets one turn in the window to optionally commit their own units to the same pending branch
+- **Window closes** when it is the initiating player's next turn — n turns after opening
+- **First turn on the new timeline**: belongs to the player whose column the origin timestate was in — guaranteed by the column rule
+
+The UI always shows the predicted crystallization point before a time move is committed.
+
+### 2.3 n+0.5 Mode (Default)
+Theater of War uses the **n+0.5 window** by default. At the moment of crystallization — when it is the initiating player's next turn on the source board — the initiator receives a **constrained half-action** before the branch finalizes:
+
+- They may commit additional units from the board(s) they sent units from when initiating the branch, using only the remaining movement budget those units had at the end of the initiating turn
+- They may not purchase new units or use movement from a fresh turn
+- This represents reinforcing the past just before history locks in, with full knowledge of which other nations have also committed forces
+
+After the half-action, the branch crystallizes and the origin column player takes the first full turn on the new timeline.
+
+**Example (5 players: G, R, U, A, J; Germany initiates at their turn in round 2, branching from Russia's column):**
 ```
-Window 1:  G(1) R(2) U(3) A(4) J(5) G(6)*  → branches resolve
-Window 2:  R(7) U(8) A(9) J(10) G(11) R(12)* → branches resolve
-Window 3:  U(13) A(14) J(15) G(16) R(17) U(18)* → branches resolve
+Window opens: Germany's turn (round 2)
+Window:       G → R → U → A → J → [Germany's half-action, then crystallizes]
+New timeline: Russia takes the first turn
 ```
 
-The starting player rotates by one position each window. Over n windows every player has been starting player exactly once.
+### 2.4 Pure n Mode (Optional)
+When configured as pure n (no half-action), the window closes and crystallizes immediately at the initiating player's next turn with no bonus. The origin column player then takes the first turn on the new timeline.
 
-### 2.3 Each Timeline Has Its Own Window
-When a new branch is created it inherits the sliding window state (turn order position and rotation) from the timestate it branched from. Each timeline advances its own window independently.
-
-### 2.4 Window With No Time Travel
-If no time-travel moves were declared during a window, the window closes with no branch created. The window length is always n+1 turns regardless.
+### 2.5 First-Turn Restriction
+No time-travel moves are permitted during the first full round of the game (before every player has completed their first turn). This ensures a past exists to branch into and that all crystallizations land cleanly with established history on the new timeline.
 
 ---
 
@@ -222,12 +233,11 @@ A branch forms when one or more units lock into a past timestate. The governing 
 Multiple units locked to the same `(timeline, turn number)` destination during the same governing window are bundled into a **single new branch**. Units from any nation may arrive in the same pending branch.
 
 ### 6.2 Resolution
-At the end of the governing sliding window:
+When the governing window closes (initiating player's next turn, after any half-action):
 1. All units locked to the same destination are collected
 2. A new timeline is created from that destination timestate with those units present
-3. The new timeline inherits the sliding window state from the destination timestate
-4. The new timeline receives the next available timeline ID
-5. The new timeline immediately begins accepting turns from the turn after its starting timestate
+3. The new timeline receives the next available timeline ID
+4. The new timeline begins accepting turns immediately; the first turn belongs to the player whose column the origin timestate was in
 
 ### 6.3 Locked Units After Resolution
 Once a branch resolves, locked units are now present on a real board. They receive orders normally on their player's next turn on that board.
@@ -261,8 +271,8 @@ When two players both commit units to the same past timestate on the same global
 ### 7.3 Multi-Board Turns
 A player resolves all their active boards during their batch in any self-chosen order. They see the results of earlier boards within their own batch before deciding on later ones.
 
-### 7.4 Crystallization Is Per-Timeline
-Each timeline crystallizes its own pending branches independently on its own n+1 window schedule. The global reference window governs **execution ordering only** — not crystallization. A timeline's pending branch may crystallize at any point, regardless of where the global order currently sits.
+### 7.4 Crystallization Is Per-Branch
+Each pending branch has its own independent window and crystallizes independently when its window closes. The global reference window governs **execution ordering only** — not crystallization. A pending branch may crystallize at any point, regardless of where the global order currently sits.
 
 ### 7.5 Base Visibility Rules
 These rules apply regardless of the Fog of War setting.
@@ -400,4 +410,4 @@ After a agreed number of rounds, count unique VCs held across all active timelin
 - **Economies are isolated**: Each timeline lives and dies on its own resources.
 - **Information asymmetry is concurrent, not persistent**: Players know their own forces everywhere. Fog only covers what other players are doing at this exact moment on other boards.
 - **Sequential turns are preserved**: The core A&A turn structure is unchanged. The sliding window is a layer on top.
-- **The window distributes advantage**: The n+1 rotation ensures no player permanently holds first-mover or last-mover advantage in time-travel decisions.
+- **The window distributes advantage**: Every player gets exactly one turn in every pending branch window. The initiator goes first (opens the branch) and in n+0.5 mode gets a constrained last look before crystallization — but cannot spend fresh resources, only what remained from their initiating turn.
