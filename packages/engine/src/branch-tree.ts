@@ -96,7 +96,7 @@ export function getAncestorPath(tree: BranchTree, timelineId: TimelineId): Branc
   const path: BranchNode[] = [];
   let current: TimelineId | null = timelineId;
   while (current !== null) {
-    const node = tree.nodes[current];
+    const node: BranchNode | undefined = tree.nodes[current];
     if (!node) throw new Error(`Timeline not found: ${current}`);
     path.unshift(node);
     current = node.parentTimelineId;
@@ -116,7 +116,7 @@ export function lowestCommonAncestor(
   let current: TimelineId | null = b;
   while (current !== null) {
     if (ancestorsA.has(current)) return current;
-    const node = tree.nodes[current];
+    const node: BranchNode | undefined = tree.nodes[current];
     if (!node) throw new Error(`Timeline not found: ${current}`);
     current = node.parentTimelineId;
   }
