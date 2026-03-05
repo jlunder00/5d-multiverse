@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { Location, BoardAddress, RegionId } from './coordinates.js';
 import { Entity, EntityId, RegionState, Economy, PlayerId } from './entities.js';
-import { Action, ActionId, ActionResult } from './actions.js';
+import { Action, ActionResult } from './actions.js';
 import { BranchId, PendingBranch } from './branch.js';
 import { WindowMode } from './window.js';
+import { AdjacencyMode, MovementMode, LooseModeConflictResolver } from './movement.js';
+import { EngineTools } from './engine-tools.js';
 
 // ---------------------------------------------------------------------------
 // Board & World state
@@ -27,13 +29,17 @@ export interface WorldState {
 }
 
 // ---------------------------------------------------------------------------
-// Action validation context
+// Action context
 // ---------------------------------------------------------------------------
 
 export interface ActionContext {
   board: Board;
   world: WorldState;
   player: PlayerId;
+  /** The current turn phase ID. */
+  currentPhase: string;
+  /** Engine tools available for the plugin to call during validation/evaluation. */
+  tools: EngineTools;
   /** True when this action is being validated during a half-action phase. */
   isHalfAction: boolean;
   /** The pending branch whose window is closing, if isHalfAction is true. */
@@ -46,50 +52,54 @@ export interface ActionContext {
 
 /**
  * Loads the spatial graph for the game map.
- * Returns region nodes and their adjacency relationships.
  */
 export interface IMapLoader {
   loadRegions(): RegionState[];
-  /** Returns the IDs of regions spatially adjacent to the given region. */
   getAdjacentRegions(regionId: RegionId): RegionId[];
 }
 
 /**
- * Declares unit types and their properties.
- * Stats are consumed by the engine's dice infrastructure.
+ * Declares a unit type and its properties.
+ * Stats are passed to the engine's dice tools when combat is resolved.
  */
 export interface IUnitDefinition {
   typeId: string;
-  /** Attack value (d6 roll threshold). Undefined for non-combat units. */
   attack?: number;
-  /** Defense value (d6 roll threshold). Undefined for non-combat units. */
   defense?: number;
-  /** Spatial movement budget per turn. Undefined for immobile units. */
+  /**
+   * Spatial movement budget per turn. Only relevant for per-budget games
+   * (Theater of War). Conquest and Colonist do not use this.
+   */
   moveRange?: number;
-  /** True if this unit's movement budget also covers temporal/lateral hops. */
+  /**
+   * True if this unit's movement budget covers temporal and lateral steps
+   * in addition to spatial steps (Theater of War shared budget model).
+   */
   sharedTimeBudget: boolean;
-  /** Opaque plugin-specific properties (first strike, two-hit, etc.). */
+  /** Plugin-specific properties (first_strike, two_hit, carrier_capacity, etc.). */
   properties: Record<string, unknown>;
 }
 
 /**
- * Declares the phases of a player's turn in order.
- * The engine uses this to enforce that actions only occur in valid phases.
+ * Declares one phase of a player's turn.
+ * The engine enforces that actions only occur in their declared phase.
  */
 export interface ITurnPhase {
   id: string;
-  /** Human-readable label. */
   label: string;
-  /** Action type IDs that are legal during this phase. */
   allowedActionTypes: string[];
-  /** Whether time-travel actions are permitted during this phase. */
   allowsTimeTravelActions: boolean;
 }
 
 /**
  * Determines whether a proposed action is legal given the current state.
+ *
+ * The plugin is fully responsible for legality. It may call engine tools
+ * (via context.tools) for reachability checks, adjacency checks, step
+ * counts, etc., and combine those with its own game-specific rules.
+ *
  * Called for normal actions and (with context.isHalfAction = true) for
- * half-actions. The plugin is fully responsible for what is legal in each case.
+ * half-actions — the plugin decides what is legal in each case.
  */
 export interface IActionValidator {
   validate(action: Action, context: ActionContext): { valid: boolean; reason?: string };
@@ -97,43 +107,48 @@ export interface IActionValidator {
 
 /**
  * Resolves a validated action into state changes.
- * May call engine reusable tools (dice roller, movement resolver, etc.)
- * via the EngineTools handle passed at plugin registration.
+ * May call engine tools (context.tools.dice, context.tools.movement, etc.).
  */
 export interface IActionEvaluator {
   evaluate(action: Action, context: ActionContext): ActionResult;
 }
 
 /**
- * Declares which committed actions trigger a pending branch, and under
- * what conditions. Called after an action is evaluated.
+ * Declares which committed actions trigger a pending branch and where.
+ * Called by the engine after each action is evaluated.
  */
 export interface IBranchTrigger {
-  /** Returns true if this action should create (or contribute to) a pending branch. */
   shouldBranch(action: Action, result: ActionResult, context: ActionContext): boolean;
-  /**
-   * Returns the board address the branch should originate from.
-   * The engine uses this to look up or create the pending branch.
-   */
   getBranchOrigin(action: Action, result: ActionResult, context: ActionContext): BoardAddress;
 }
 
 /**
- * Declares the arrival policy for this game.
- * The engine calls onArrival when an entity arrives at a pending branch.
+ * Declares what arriving entities do when they land on a pending branch.
+ *
+ * Arrival actions execute in the pending timeline's context, in global
+ * execution order. Each arriver acts against the state left by prior arrivals.
+ * After completing arrival actions the entities are inactive until
+ * crystallization.
+ *
+ * Also declares how loose-mode queued actions resolve when they turn out to
+ * be illegal at resolution time.
  */
 export interface IArrivalPolicy {
   /**
-   * Called when a player's entities arrive at a pending branch.
-   * The plugin returns the list of actions the arriving entities must or may
-   * take (arrival actions). The engine sequences these against current pending
-   * state in global execution order.
+   * Returns the arrival actions for the given entities. The engine sequences
+   * and validates these against the current pending state.
    */
   getArrivalActions(
     branch: PendingBranch,
     arrivingEntities: Entity[],
     context: ActionContext,
   ): Action[];
+
+  /**
+   * Per-action-type conflict resolvers for loose adjacency mode.
+   * Called when a future-targeted action becomes illegal at resolution time.
+   */
+  looseModeConflictResolvers: LooseModeConflictResolver[];
 }
 
 /**
@@ -141,20 +156,18 @@ export interface IArrivalPolicy {
  * Called at the end of each global turn after all boards have resolved.
  */
 export interface IWinCondition {
-  /** Returns the winning player ID, or null if no winner yet. */
   evaluate(world: WorldState): PlayerId | null;
 }
 
 /**
- * Declares all configurable settings for this game and their defaults.
- * The engine surfaces these to the session setup UI.
+ * A configurable game setting exposed to session setup.
  */
 export interface IGameSetting<T> {
   id: string;
   label: string;
   description: string;
   default: T;
-  options?: T[]; // for enum-style settings
+  options?: T[];
 }
 
 // ---------------------------------------------------------------------------
@@ -170,29 +183,34 @@ export type TurnOrderModel = z.infer<typeof TurnOrderModelSchema>;
 
 /**
  * The complete definition of a game plugin.
- * Registered with the engine at startup.
+ * Registered with the engine at startup via the plugin registry.
  */
 export interface IGameDefinition {
-  /** Unique identifier for this game (e.g. "colonist", "conquest", "theater"). */
   gameId: string;
-  /** Human-readable name. */
   name: string;
 
-  /** Turn ordering model this game uses. */
   turnOrderModel: TurnOrderModel;
-
-  /** Sliding window mode for pending branches in this game. */
   windowMode: WindowMode;
 
-  /** Minimum number of players. */
+  /**
+   * Adjacency mode default for this game.
+   * Exposed as a configurable setting; this is the out-of-box default.
+   */
+  defaultAdjacencyMode: AdjacencyMode;
+
+  /**
+   * Movement mode default for this game.
+   * Only meaningful for games with spatially-moving pieces (Theater, Conquest).
+   * Set to null for portal-jump games (Colonist).
+   */
+  defaultMovementMode: MovementMode | null;
+
   minPlayers: number;
-  /** Maximum number of players. */
   maxPlayers: number;
 
-  /** Configurable settings exposed to session setup. */
+  /** All configurable settings for this game. */
   settings: IGameSetting<unknown>[];
 
-  // Plugin interface implementations
   mapLoader: IMapLoader;
   unitDefinitions: IUnitDefinition[];
   turnPhases: ITurnPhase[];
@@ -202,6 +220,5 @@ export interface IGameDefinition {
   arrivalPolicy: IArrivalPolicy;
   winCondition: IWinCondition;
 
-  /** Called once at game start to build the initial board state. */
   createInitialBoard(players: PlayerId[], settings: Record<string, unknown>): Board;
 }
