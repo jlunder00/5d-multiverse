@@ -173,7 +173,12 @@ Each pending branch has its own independent sliding window, specific to that bra
 
 **Crystallization (n model)**: When the window completes — i.e. when it is the initiating player's next turn — the pending branch crystallizes into a new live timeline with no further input from the initiator.
 
-**Crystallization (n+0.5 model)**: At the same moment (the initiating player's next turn, on the initiating board), the initiator receives a **constrained half-action** before crystallization fires. This half-action allows them to commit additional units or resources to the pending branch, but is strictly limited to the capacity remaining from the end of their initiating turn — they may not spend fresh resources from their new turn. After the half-action, crystallization proceeds.
+**Crystallization (n+0.5 model)**: At the same moment (the initiating player's next turn, on the initiating board), the initiator receives a **half-action** before crystallization fires. The engine:
+- Does not advance the turn counter during the half-action (it is part of the prior turn)
+- Restricts the half-action to the in-scope boards: the pending branch itself, and the initiator's source boards — only the boards that actually sent units or actions to initiate this branch, across all timelines the initiator acted in on that turn
+- Invokes the plugin's action validator with `context.isHalfAction = true`
+
+What actions are legal during the half-action is entirely the **plugin's responsibility**. The engine enforces only the board scope and the no-turn-advance rule.
 
 The n+0.5 model gives the initiator both first-mover advantage (they define the branch) and last-look advantage (they see all other arrivals before adding their own), at the cost of resource constraint. This mirrors the strategic intent of the original n+1 window design, but without granting a free extra turn.
 
