@@ -72,6 +72,6 @@ export const ExecutionOrderSchema = z.object({
    */
   priorityQueue: z.array(PlayerIdSchema),
   /** Index of the player whose turn it currently is. */
-  currentIndex: z.number().int().nonneg(),
+  currentIndex: z.number().int().nonnegative(),
 });
 export type ExecutionOrder = z.infer<typeof ExecutionOrderSchema>;

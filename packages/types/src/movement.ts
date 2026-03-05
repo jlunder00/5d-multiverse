@@ -69,10 +69,10 @@ export type MovementSpec = z.infer<typeof MovementSpecSchema>;
 
 /** Breakdown of step counts by type, returned by computeStepCounts. */
 export const StepCountsSchema = z.object({
-  spatial: z.number().int().nonneg(),
-  temporal: z.number().int().nonneg(),
-  lateral: z.number().int().nonneg(),
-  total: z.number().int().nonneg(),
+  spatial: z.number().int().nonnegative(),
+  temporal: z.number().int().nonnegative(),
+  lateral: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
 });
 export type StepCounts = z.infer<typeof StepCountsSchema>;
 
