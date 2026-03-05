@@ -46,23 +46,36 @@ All timelines inherit the same turn order from their branching point. For any gi
 Players take turns in a fixed sequential order (e.g. Player 1 → Player 2 → ... → Player N). This order never changes.
 
 ### 2.2 The Sliding Window
-Time-travel moves do not create branches immediately. They are **committed** during a player's turn and **resolve** at the end of the current sliding window.
+Time-travel moves do not create branches immediately. They are **committed** during a player's turn and **resolve** at the end of the governing sliding window.
 
-- The sliding window spans **n+1 turns**, where n is the number of players
-- The turn sequence is continuous across rounds
-- A window resolves every n+1 turns
-- The **starting player** of a window occupies both position 1 (first, with no knowledge of others' time-travel intentions) and position n+1 (last, with full knowledge, and the opportunity to augment committed moves before resolution)
-- The starting player rotates by one position each window; over n windows every player has been starting player exactly once
+Each pending branch has its own independent window. The window is always **n turns long** — exactly one full round.
 
-**Example (4 players: 1, 2, 3, 4):**
+- **Window opens** on the turn of the player who initiates the pending branch
+- **Window duration**: every other player gets one turn in the window to optionally commit armies or actions to the same pending branch
+- **Window closes** when it is the initiating player's next turn — n turns after opening
+- **Crystallization**: the pending branch becomes a live timeline at that moment
+- **First turn on the new timeline**: belongs to the player whose column the origin timestate was in — guaranteed by the column rule
+
+The UI always shows the predicted crystallization point before a time move is committed.
+
+### 2.3 n+0.5 Mode (Default)
+Conquest uses the **n+0.5 window** by default. At the moment of crystallization — when it is the initiating player's next turn on the source board — the initiator receives a **constrained half-action** before the branch finalizes:
+
+- They may commit additional armies from the same source territory they used when initiating the branch, up to the armies remaining there at the end of their initiating turn
+- They may not use armies received at the start of their new turn
+- This represents reinforcing the past just before history locks in, with full knowledge of who else arrived
+
+After the half-action, the branch crystallizes and the origin column player takes the first full turn on the new timeline.
+
+**Example (4 players: 1, 2, 3, 4; player 2 initiates at their turn in round 2, branching from player 3's column):**
 ```
-Window 1:  1(1) 2(2) 3(3) 4(4) 1(5)*  → branches resolve
-Window 2:  2(6) 3(7) 4(8) 1(9) 2(10)* → branches resolve
-Window 3:  3(11) 4(12) 1(13) 2(14) 3(15)* → branches resolve
+Window opens: player 2's turn (round 2)
+Window:       2 → 3 → 4 → 1 → [player 2's half-action, then crystallizes]
+New timeline: player 3 takes the first turn
 ```
 
-### 2.3 Each Timeline Has Its Own Window
-When a new branch is created it inherits the sliding window state from the timestate it branched from. Each timeline advances its own window independently.
+### 2.4 First-Turn Restriction
+No time-travel moves are permitted during the first full round of the game (before every player has completed their first turn). This ensures a past exists to branch into and that all crystallizations land cleanly with established history on the new timeline.
 
 ---
 
@@ -168,12 +181,11 @@ If this setting is enabled, armies may move at most N territories spatially afte
 Multiple commitments to the same `(timeline, turn number)` destination during the same governing window bundle into a **single new branch**. Armies from any player may share a pending branch destination.
 
 ### 6.2 Resolution
-At the end of the governing sliding window:
+When the governing window closes (initiator's next turn, after any half-action):
 1. All armies committed to the same destination are collected
 2. A new timeline is created from that destination timestate with those armies added
-3. The new timeline inherits the sliding window state from the destination timestate
-4. The new timeline receives the next available timeline ID
-5. The new timeline begins accepting turns from the turn after its starting timestate
+3. The new timeline receives the next available timeline ID
+4. The new timeline begins accepting turns immediately; the first turn belongs to the player whose column the origin timestate was in
 
 ### 6.3 Pending Branch Visualization
 When a pending branch exists, the game displays a **pending board** showing the destination timestate with all committed armies present, visually distinguished (e.g. colored outline, reduced opacity) from resolved timelines. When the window resolves the pending board becomes a full timeline.
@@ -193,8 +205,8 @@ Each global turn has a **global first player**. Execution proceeds:
 
 When two players both commit armies to the same past timestate on the same global turn, the player whose batch resolved first is considered to have arrived first.
 
-### 7.2 Crystallization Is Per-Timeline
-Each timeline crystallizes its pending branches independently on its own n+1 window. The global reference window governs execution ordering only — not crystallization.
+### 7.2 Crystallization Is Per-Branch
+Each pending branch has its own independent window and crystallizes independently. The global reference window governs execution ordering only — not crystallization.
 
 ### 7.3 Multi-Board Turns
 A player resolves all their active boards during their batch in any self-chosen order, seeing results from earlier boards before deciding on later ones.
