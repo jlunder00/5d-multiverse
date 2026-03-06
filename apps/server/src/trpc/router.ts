@@ -168,7 +168,7 @@ export const appRouter = router({
       const filtered = filterWorldForPlayer(
         state.world,
         playerId,
-        input.fogSetting,
+        'full_information',
         activePlayer,
       );
 
