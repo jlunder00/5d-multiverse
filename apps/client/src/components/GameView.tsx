@@ -44,11 +44,10 @@ function parseRegions(raw: [string, unknown][]): RegionInfo[] {
 
 export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameViewProps) {
   const [selectedPiece, setSelectedPiece] = useState<SelectedPiece | null>(null);
-  const [timeBranchMode, setTimeBranchMode] = useState(false);
   const [selectedBoard, setSelectedBoard] = useState<{ timelineId: string; turn: number } | null>(null);
 
   const state = trpc.getVisibleState.useQuery(
-    { gameId, fogSetting: 'current_turn_fog' },
+    { gameId, fogSetting: 'full_information' },
     { refetchInterval: 2000 },
   );
 
@@ -59,7 +58,6 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
   function clearSelection() {
     setSelectedPiece(null);
-    setTimeBranchMode(false);
   }
 
   if (state.isLoading) return (
@@ -74,17 +72,33 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   const data = state.data!;
   const isMyTurn = data.currentPlayer === playerId;
 
-  // Unique players from economies on any board
   const allPlayers = [...new Set(
     data.boards.flatMap((b) => b.economies.map(([p]) => p as string))
   )];
 
-  // Active board = current turn's board on TL0 (the main timeline)
   const activeTurn = data.globalTurn;
-  const activeTimeline = 'TL0';
+  // Prefer TL0; fall back to first non-ghost timeline at the current turn
+  const activeTimeline = (() => {
+    const atCurrentTurn = data.boards
+      .filter(b => (b.address.turn as number) === activeTurn && !b.pluginData?.isPendingBranch)
+      .map(b => b.address.timeline as string);
+    return atCurrentTurn.includes('TL0') ? 'TL0' : (atCurrentTurn[0] ?? 'TL0');
+  })();
 
   const timelines = [...new Set(data.boards.map((b) => b.address.timeline as string))].sort();
   const maxTurn = Math.max(activeTurn, ...data.boards.map((b) => b.address.turn as number));
+
+  // Read piece's current region fresh from server data to avoid stale closure
+  const freshRegion = (() => {
+    if (!selectedPiece) return null;
+    const board = data.boards.find(b =>
+      (b.address.timeline as string) === selectedPiece.fromBoard.timelineId &&
+      (b.address.turn as number) === selectedPiece.fromBoard.turn
+    );
+    const entry = board?.entities.find(([id]) => id === selectedPiece.id);
+    const loc = (entry?.[1] as { location?: { region?: string } } | undefined)?.location;
+    return loc?.region ?? selectedPiece.fromRegion;
+  })();
 
   const pendingKeys = new Set(
     data.pendingBranches.map(([, pb]) => {
@@ -93,27 +107,27 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     }),
   );
 
-  // Build cells with highlight info
   const cells: BoardCell[] = data.boards.map((b) => {
     const tl = b.address.timeline as string;
     const t = b.address.turn as number;
     const pieces = parseEntities(b.entities);
     const regions = parseRegions(b.regions);
 
-    // Time branch target: any past board when in time branch mode
-    const isTimeBranchTarget = timeBranchMode && t < activeTurn;
+    const isGhost = !!(b.pluginData?.isPendingBranch);
+    const ghostOriginAddress = isGhost
+      ? (b.pluginData.originAddress as { timeline: string; turn: number })
+      : undefined;
 
-    // Legal move regions: adjacent to selected piece's region, on this same board
+    // Past boards are highlighted as time-travel targets when a piece is selected
+    const isTimeTravelTarget = !!selectedPiece && t < activeTurn;
+
+    // Legal spatial move regions: only on the same active board as the selected piece
     let legalMoveRegions: string[] | undefined;
     let selectedPieceRegion: string | undefined;
-    if (
-      selectedPiece &&
-      !timeBranchMode &&
-      tl === selectedPiece.fromBoard.timelineId &&
-      t === selectedPiece.fromBoard.turn
-    ) {
-      selectedPieceRegion = selectedPiece.fromRegion;
-      legalMoveRegions = STUB_ADJACENT[selectedPiece.fromRegion] ?? [];
+    if (selectedPiece && tl === selectedPiece.fromBoard.timelineId && t === selectedPiece.fromBoard.turn) {
+      const from = freshRegion ?? selectedPiece.fromRegion;
+      selectedPieceRegion = from;
+      legalMoveRegions = STUB_ADJACENT[from] ?? [];
     }
 
     return {
@@ -121,10 +135,12 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       turn: t,
       exists: true,
       isPending: pendingKeys.has(`${tl}:${t}`),
-      isActive: tl === activeTimeline && t === activeTurn,
+      isActive: t === activeTurn && !isGhost,
+      isGhost,
+      ghostOriginAddress,
       pieces,
       regions,
-      ...(isTimeBranchTarget ? { isTimeBranchTarget: true } : {}),
+      ...(isTimeTravelTarget ? { isTimeTravelTarget: true } : {}),
       ...(legalMoveRegions ? { legalMoveRegions } : {}),
       ...(selectedPieceRegion ? { selectedPieceRegion } : {}),
     };
@@ -132,80 +148,81 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
   function handlePieceClick(pieceId: string, cell: BoardCell) {
     if (!isMyTurn) return;
+    // Only select pieces on current-turn, non-ghost boards
+    if (cell.turn !== activeTurn || cell.isGhost) return;
     const piece = cell.pieces.find((p) => p.id === pieceId);
-    if (!piece) return;
-    if (piece.owner !== playerId) return; // can't select opponent's piece
-
-    // Toggle selection
+    if (!piece || piece.owner !== playerId) return;
     if (selectedPiece?.id === pieceId) { clearSelection(); return; }
-
     setSelectedPiece({
       id: pieceId,
       owner: piece.owner,
       fromBoard: { timelineId: cell.timelineId, turn: cell.turn },
       fromRegion: piece.region,
     });
-    setTimeBranchMode(false);
   }
 
   function handleRegionClick(regionId: string, cell: BoardCell) {
-    if (!isMyTurn || !selectedPiece || timeBranchMode) return;
+    if (!isMyTurn || !selectedPiece) return;
+    const fromRegion = freshRegion ?? selectedPiece.fromRegion;
 
-    const legalRegions = STUB_ADJACENT[selectedPiece.fromRegion] ?? [];
-    if (!legalRegions.includes(regionId)) return;
-
-    // Same board move
-    const { fromBoard, fromRegion } = selectedPiece;
-    submitAction.mutate({
-      gameId,
-      boardAddress: { timeline: fromBoard.timelineId, turn: fromBoard.turn },
-      action: {
-        id: buildActionId() as any,
-        type: 'move' as any,
-        player: playerId as any,
-        from: { timeline: fromBoard.timelineId as any, turn: fromBoard.turn as any, region: fromRegion as any },
-        to: { timeline: fromBoard.timelineId as any, turn: fromBoard.turn as any, region: regionId as any },
-        entityId: selectedPiece.id as any,
-        payload: {},
-        submittedAt: Date.now(),
-      },
-    });
-  }
-
-  function handleCellClick(cell: BoardCell) {
-    if (timeBranchMode && cell.turn < activeTurn) {
-      // Submit time branch to this past board
-      const srcBoard = { timelineId: activeTimeline, turn: activeTurn };
+    if (cell.timelineId === selectedPiece.fromBoard.timelineId && cell.turn === activeTurn) {
+      // Spatial move on the same board
+      const legal = STUB_ADJACENT[fromRegion] ?? [];
+      if (!legal.includes(regionId)) return;
       submitAction.mutate({
         gameId,
-        boardAddress: { timeline: srcBoard.timelineId, turn: srcBoard.turn },
+        boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: activeTurn },
         action: {
           id: buildActionId() as any,
-          type: 'time_branch' as any,
+          type: 'move' as any,
           player: playerId as any,
-          from: { timeline: srcBoard.timelineId as any, turn: srcBoard.turn as any, region: 'C' as any },
-          to: { timeline: cell.timelineId as any, turn: cell.turn as any, region: 'C' as any },
+          entityId: selectedPiece.id as any,
+          from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: fromRegion as any },
+          to: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: regionId as any },
           payload: {},
           submittedAt: Date.now(),
         },
       });
-      return;
+    } else if (cell.turn < activeTurn) {
+      // Time travel — piece sent to a past board (ghost or historical)
+      const toTimeline = cell.ghostOriginAddress?.timeline ?? cell.timelineId;
+      const toTurn = cell.ghostOriginAddress?.turn ?? cell.turn;
+      submitAction.mutate({
+        gameId,
+        boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: activeTurn },
+        action: {
+          id: buildActionId() as any,
+          type: 'move_to_past' as any,
+          player: playerId as any,
+          entityId: selectedPiece.id as any,
+          from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: fromRegion as any },
+          to: { timeline: toTimeline as any, turn: toTurn as any, region: regionId as any },
+          payload: {},
+          submittedAt: Date.now(),
+        },
+      });
     }
+  }
+
+  function handleCellClick(cell: BoardCell) {
     setSelectedBoard({ timelineId: cell.timelineId, turn: cell.turn });
-    clearSelection();
   }
 
   function handlePass() {
-    const board = { timelineId: activeTimeline, turn: activeTurn };
+    const activeBoard = data.boards.find(b =>
+      (b.address.turn as number) === activeTurn && !b.pluginData?.isPendingBranch
+    );
+    if (!activeBoard) return;
+    const tl = activeBoard.address.timeline as string;
     submitAction.mutate({
       gameId,
-      boardAddress: { timeline: board.timelineId, turn: board.turn },
+      boardAddress: { timeline: tl, turn: activeTurn },
       action: {
         id: buildActionId() as any,
         type: 'pass' as any,
         player: playerId as any,
-        from: { timeline: board.timelineId as any, turn: board.turn as any, region: 'C' as any },
-        to: { timeline: board.timelineId as any, turn: board.turn as any, region: 'C' as any },
+        from: { timeline: tl as any, turn: activeTurn as any, region: 'C' as any },
+        to: { timeline: tl as any, turn: activeTurn as any, region: 'C' as any },
         payload: {},
         submittedAt: Date.now(),
       },
@@ -213,8 +230,10 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   }
 
   const statusMsg = (() => {
-    if (timeBranchMode) return { text: 'Click any past board to branch into it', color: 'text-purple-300' };
-    if (selectedPiece) return { text: `${selectedPiece.id} selected — click a highlighted region to move, or click Time Branch`, color: 'text-blue-300' };
+    if (selectedPiece) return {
+      text: `${selectedPiece.id} selected — click a highlighted region to move, or click a past board to send it back in time`,
+      color: 'text-blue-300',
+    };
     if (isMyTurn) return { text: 'Your turn — click one of your pieces to select it', color: 'text-green-400' };
     return { text: `Waiting for ${data.currentPlayer}…`, color: 'text-gray-500' };
   })();
@@ -244,7 +263,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       {/* Status bar */}
       <div className={`px-4 py-1.5 text-sm border-b border-gray-800 flex items-center justify-between ${statusMsg.color}`}>
         <span>{statusMsg.text}</span>
-        {(selectedPiece || timeBranchMode) && (
+        {selectedPiece && (
           <button onClick={clearSelection} className="text-xs text-gray-500 hover:text-white">Cancel (Esc)</button>
         )}
       </div>
@@ -275,16 +294,6 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
               className="text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded px-3 py-1.5"
             >
               Pass
-            </button>
-            <button
-              onClick={() => { setTimeBranchMode((v) => !v); setSelectedPiece(null); }}
-              className={`text-sm rounded px-3 py-1.5 transition-colors ${
-                timeBranchMode
-                  ? 'bg-purple-600 hover:bg-purple-500 ring-1 ring-purple-400'
-                  : 'bg-purple-900 hover:bg-purple-800'
-              }`}
-            >
-              {timeBranchMode ? 'Cancel Time Branch' : 'Time Branch →'}
             </button>
             <button
               onClick={() => endTurnMut.mutate({ gameId })}

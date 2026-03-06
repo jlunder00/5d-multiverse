@@ -20,8 +20,12 @@ export interface BoardCell {
   isActive: boolean;
   pieces: PieceInfo[];
   regions: RegionInfo[];
-  /** Highlight this board as a valid time-branch destination */
-  isTimeBranchTarget?: boolean;
+  /** Highlight this board as a valid time-travel destination */
+  isTimeTravelTarget?: boolean;
+  /** This board is a ghost/pending board (not yet crystallized) */
+  isGhost?: boolean;
+  /** If ghost, the origin address it was branched from */
+  ghostOriginAddress?: { timeline: string; turn: number };
   /** Regions on this board that are legal move destinations */
   legalMoveRegions?: string[];
   /** Region of the currently selected piece (on this board) */
@@ -118,7 +122,8 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
   // Border / bg
   let borderColor = 'border-gray-700';
   let bg = 'bg-gray-900';
-  if (cell.isTimeBranchTarget) { borderColor = 'border-purple-500'; bg = 'bg-purple-950'; }
+  if (cell.isTimeTravelTarget) { borderColor = 'border-purple-500'; bg = 'bg-purple-950'; }
+  else if (cell.isGhost) { borderColor = 'border-yellow-500'; bg = 'bg-yellow-950'; }
   else if (cell.isPending) { borderColor = 'border-yellow-600'; bg = 'bg-yellow-950'; }
   else if (cell.isActive) { borderColor = 'border-blue-500'; bg = 'bg-blue-950'; }
   if (isSelected) borderColor = 'border-white';
@@ -139,8 +144,9 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
         <span className="font-mono text-gray-500 text-[10px]">
           {cell.timelineId}:T{cell.turn}
         </span>
-        {cell.isPending && <span className="text-yellow-400 text-[10px]">◈</span>}
-        {cell.isTimeBranchTarget && <span className="text-purple-400 text-[10px]">⟲</span>}
+        {cell.isGhost && <span className="text-yellow-400 text-[10px]">◈</span>}
+        {cell.isPending && !cell.isGhost && <span className="text-yellow-600 text-[10px]">◈</span>}
+        {cell.isTimeTravelTarget && <span className="text-purple-400 text-[10px]">⟲</span>}
       </div>
 
       {/* Region grid */}
