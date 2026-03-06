@@ -193,15 +193,35 @@ export function crystallizeDueWindows(
       current = { ...current, windows };
     }
 
-    // Crystallize
-    const newTimelineId = nextTimelineId() as ReturnType<typeof nextTimelineId> & string;
+    // Crystallize using pre-assigned ID (nextTimelineId ignored)
+    const pendingBranch = current.world.pendingBranches.get(branchId);
+    if (!pendingBranch?.crystallizedTimelineId)
+      throw new Error(`No crystallizedTimelineId on branch ${branchId}`);
+    const newTimelineId = pendingBranch.crystallizedTimelineId;
     const globalTurn = current.order.globalTurn as Turn;
-    const branchTree = crystallizeBranch(current.branchTree, branchId, newTimelineId as any, globalTurn);
+    const branchTree = crystallizeBranch(current.branchTree, branchId, newTimelineId, globalTurn);
+    let world = updatePendingBranch(current.world, branchTree.pendingBranches[branchId]!);
 
-    // Update the pending branch in world state
-    const updatedPending = branchTree.pendingBranches[branchId];
-    if (!updatedPending) throw new Error(`Branch missing after crystallize: ${branchId}`);
-    const world = updatePendingBranch(current.world, updatedPending);
+    // Strip isPendingBranch flag from ghost board
+    const ghostAddress = { timeline: newTimelineId, turn: pendingBranch.originAddress.turn };
+    const ghostBoard = getBoardAt(world, ghostAddress);
+    if (ghostBoard) {
+      const { isPendingBranch: _a, originAddress: _b, ...rest } = ghostBoard.pluginData as Record<string, unknown>;
+      world = setBoard(world, { ...ghostBoard, pluginData: rest });
+    }
+
+    // Create catch-up boards from originTurn+1 to currentGlobalTurn
+    for (let t = (pendingBranch.originAddress.turn as number) + 1; t <= (globalTurn as number); t++) {
+      const prev = getBoardAt(world, { timeline: newTimelineId, turn: (t - 1) as Turn });
+      if (prev) {
+        const turn = t as Turn;
+        world = setBoard(world, {
+          ...prev,
+          address: { timeline: newTimelineId, turn },
+          entities: new Map([...prev.entities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn } }])),
+        });
+      }
+    }
 
     // Close the window
     const windows = new Map(current.windows);
