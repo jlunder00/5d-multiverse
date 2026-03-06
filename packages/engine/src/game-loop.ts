@@ -141,6 +141,9 @@ export function processAction(
       // Create ghost board copied from origin board (historical entities preserved).
       // The arriving piece is added under a new entity ID — bootstrap paradox: both
       // the historical copy and the arrived copy coexist in the new timeline.
+      // The ghost board is placed at originAddress.turn + 1: the branch happened at
+      // originAddress.turn, so the first actively-played turn in the new timeline is +1.
+      const ghostTurn = ((originAddress.turn as number) + 1) as Turn;
       const originBoard = getBoardAt(world, originAddress);
       if (originBoard) {
         const entities = new Map(originBoard.entities);
@@ -149,12 +152,12 @@ export function processAction(
           entities.set(arrivedId, {
             ...movingEntity,
             id: arrivedId,
-            location: { timeline: pendingTimelineId, turn: originAddress.turn, region: action.to.region },
+            location: { timeline: pendingTimelineId, turn: ghostTurn, region: action.to.region },
           });
         }
         world = setBoard(world, addParty({
           ...originBoard,
-          address: { timeline: pendingTimelineId, turn: originAddress.turn },
+          address: { timeline: pendingTimelineId, turn: ghostTurn },
           entities,
           pluginData: { ...originBoard.pluginData, isPendingBranch: true, originAddress },
         }, player));

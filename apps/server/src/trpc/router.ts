@@ -38,7 +38,7 @@ function makeGameId(): string {
 }
 
 function makeEngineTools(plugin: ReturnType<typeof getPlugin>) {
-  const movement = createMovementTools((regionId) =>
+  const movement = createMovementTools((regionId: import('@5d/types').RegionId) =>
     plugin.mapLoader.getAdjacentRegions(regionId),
   );
   const dice = createDiceTools();
@@ -283,7 +283,7 @@ export const appRouter = router({
         state,
         plugin,
         tools,
-        (s, _window) => s, // half-action callback: no-op (client drives this)
+        (s: GameLoopState, _window: BranchWindow) => s, // half-action callback: no-op (client drives this)
         () => `TL${nextTimelineCounter++}`,
       );
 
