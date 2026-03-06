@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 
 export interface PieceInfo {
   id: string;
@@ -42,6 +42,9 @@ export interface BoardGridProps {
   onRegionClick?: (regionId: string, cell: BoardCell) => void;
 }
 
+const ROW_HEIGHT = 116; // px — 7rem grid rows + 1px gap
+const COL_WIDTH = 116;  // px — minmax(7rem, 1fr) approximation
+
 // Stable player→color mapping by hashing the player ID
 const PALETTE = ['#3b82f6', '#ef4444', '#22c55e', '#eab308', '#a855f7', '#f97316', '#06b6d4'];
 function playerColor(playerId: string): string {
@@ -60,9 +63,41 @@ export function BoardGrid({
   onRegionClick,
 }: BoardGridProps) {
   const cellMap = new Map(cells.map((c) => [`${c.timelineId}:${c.turn}`, c]));
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const panStart = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
+
+  function onPointerDown(e: React.PointerEvent) {
+    if (e.button !== 0) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    panStart.current = { x: e.clientX, y: e.clientY, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop };
+    el.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: React.PointerEvent) {
+    if (!panStart.current) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const dx = e.clientX - panStart.current.x;
+    const dy = e.clientY - panStart.current.y;
+    el.scrollLeft = panStart.current.scrollLeft - dx;
+    el.scrollTop = panStart.current.scrollTop - dy;
+  }
+
+  function onPointerUp() {
+    panStart.current = null;
+  }
 
   return (
-    <div className="overflow-auto">
+    <div
+      ref={scrollRef}
+      className="overflow-auto cursor-grab select-none h-full"
+      style={{ cursor: panStart.current ? 'grabbing' : 'grab' }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+    >
       <div
         className="grid gap-1 p-2"
         style={{
@@ -70,19 +105,32 @@ export function BoardGrid({
           gridTemplateRows: `1.5rem repeat(${timelines.length}, 7rem)`,
         }}
       >
-        {/* Header */}
-        <div className="flex items-center justify-center text-xs text-gray-500 font-mono">TL\T</div>
+        {/* Corner */}
+        <div className="sticky top-0 left-0 z-20 flex items-center justify-center text-xs text-gray-500 font-mono bg-gray-950">
+          TL\T
+        </div>
+
+        {/* Turn labels (sticky top) */}
         {Array.from({ length: maxTurn }, (_, i) => (
-          <div key={i} className="flex items-center justify-center text-xs text-gray-500 font-mono">
+          <div
+            key={i}
+            className="sticky top-0 z-10 flex items-center justify-center text-xs text-gray-500 font-mono bg-gray-950 cursor-pointer hover:text-gray-300"
+            onClick={() => scrollRef.current?.scrollTo({ left: i * COL_WIDTH, behavior: 'smooth' })}
+          >
             T{i + 1}
           </div>
         ))}
 
-        {timelines.map((timelineId) => (
+        {timelines.map((timelineId, rowIndex) => (
           <React.Fragment key={timelineId}>
-            <div className="flex items-center justify-end pr-2 text-xs text-gray-500 font-mono">
+            {/* Timeline label (sticky left) */}
+            <div
+              className="sticky left-0 z-10 flex items-center justify-end pr-2 text-xs text-gray-500 font-mono bg-gray-950 cursor-pointer hover:text-gray-300"
+              onClick={() => scrollRef.current?.scrollTo({ top: rowIndex * ROW_HEIGHT, behavior: 'smooth' })}
+            >
               {timelineId}
             </div>
+
             {Array.from({ length: maxTurn }, (_, i) => {
               const turn = i + 1;
               const key = `${timelineId}:${turn}`;
@@ -144,9 +192,11 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
         <span className="font-mono text-gray-500 text-[10px]">
           {cell.timelineId}:T{cell.turn}
         </span>
-        {cell.isGhost && <span className="text-yellow-400 text-[10px]">◈</span>}
-        {cell.isPending && !cell.isGhost && <span className="text-yellow-600 text-[10px]">◈</span>}
-        {cell.isTimeTravelTarget && <span className="text-purple-400 text-[10px]">⟲</span>}
+        <span className="flex gap-0.5">
+          {cell.isGhost && <span className="text-yellow-400 text-[10px]">◈</span>}
+          {cell.isPending && !cell.isGhost && <span className="text-yellow-600 text-[10px]">◈</span>}
+          {cell.isTimeTravelTarget && <span className="text-purple-400 text-[10px]">⟲</span>}
+        </span>
       </div>
 
       {/* Region grid */}
@@ -159,6 +209,7 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
           let regionBg = 'bg-gray-800 hover:bg-gray-700';
           if (isSource) regionBg = 'bg-blue-800';
           else if (isLegal) regionBg = 'bg-green-900 hover:bg-green-800 ring-1 ring-green-500';
+          else if (cell.isTimeTravelTarget) regionBg = 'bg-purple-900 hover:bg-purple-800';
 
           return (
             <div
