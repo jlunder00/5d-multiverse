@@ -68,7 +68,7 @@ const turnPhases: ITurnPhase[] = [
   {
     id: 'main',
     label: 'Main',
-    allowedActionTypes: ['pass', 'move', 'time_branch'],
+    allowedActionTypes: ['pass', 'move', 'move_to_past'],
     allowsTimeTravelActions: true,
   },
 ];
@@ -102,13 +102,12 @@ const actionValidator: IActionValidator = {
       return { valid: true };
     }
 
-    if (type === ('time_branch' as typeof type)) {
-      if (to.turn >= from.turn) {
-        return { valid: false, reason: 'time_branch destination must be a past turn' };
-      }
-      if (to.turn < 1) {
-        return { valid: false, reason: 'cannot branch before turn 1' };
-      }
+    if (type === ('move_to_past' as typeof type)) {
+      if (!entityId) return { valid: false, reason: 'move_to_past requires entityId' };
+      const entity = context.board.entities.get(entityId);
+      if (!entity) return { valid: false, reason: 'entity not found' };
+      if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
+      if (to.turn >= from.turn) return { valid: false, reason: 'destination must be a past turn' };
       return { valid: true };
     }
 
@@ -140,10 +139,9 @@ const actionEvaluator: IActionEvaluator = {
       };
     }
 
-    if (type === ('time_branch' as typeof type)) {
-      // The piece stays on the source board; only a "flag" is planted in the past.
-      // The branch trigger fires separately after this returns.
-      return { actionId: action.id, success: true, effects: [] };
+    if (type === ('move_to_past' as typeof type) && entityId) {
+      // Remove piece from source board; engine places it on the ghost board.
+      return { actionId: action.id, success: true, effects: [{ type: 'entity_remove', entityId }] };
     }
 
     return { actionId: action.id, success: false, error: 'unknown action', effects: [] };
@@ -155,11 +153,22 @@ const actionEvaluator: IActionEvaluator = {
 // ---------------------------------------------------------------------------
 
 const branchTrigger: IBranchTrigger = {
-  shouldBranch(action: Action, result: ActionResult): boolean {
-    return (action.type as string) === 'time_branch' && result.success;
+  shouldBranch(action: Action, result: ActionResult, context: ActionContext): boolean {
+    // Stub only implements temporal-backward moves; a full plugin would also check
+    // lateral moves that land on past boards (destination.turn < timeline's present turn).
+    if ((action.type as string) !== 'move_to_past' || !result.success) return false;
+    // Return false if a pending branch already exists at the destination address —
+    // subsequent arrivals merge into the existing ghost board instead.
+    for (const b of context.world.pendingBranches.values()) {
+      if (
+        b.originAddress.timeline === action.to.timeline &&
+        b.originAddress.turn === action.to.turn &&
+        !b.crystallized
+      ) return false;
+    }
+    return true;
   },
   getBranchOrigin(action: Action): BoardAddress {
-    // The origin is the past board the player branched to
     return { timeline: action.to.timeline, turn: action.to.turn };
   },
 };
