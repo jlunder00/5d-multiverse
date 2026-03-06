@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { trpc } from '../trpc';
 import { BoardGrid, BoardCell, PieceInfo, RegionInfo } from './BoardGrid';
 import { PlayerSwitcher } from './PlayerSwitcher';
@@ -139,7 +139,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       isPending: pendingKeys.has(`${tl}:${t}`),
       isActive: t === activeTurn && !isGhost,
       isGhost,
-      ghostOriginAddress,
+      ...(ghostOriginAddress ? { ghostOriginAddress } : {}),
       pieces,
       regions,
       ...(isTimeTravelTarget ? { isTimeTravelTarget: true } : {}),
@@ -271,7 +271,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       </div>
 
       {/* Main content: board grid + right panel */}
-      <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+      <PanelGroup orientation="horizontal" className="flex-1 overflow-hidden">
         <Panel defaultSize={75} minSize={40}>
           <main className="h-full overflow-hidden p-3">
             <BoardGrid
