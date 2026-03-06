@@ -21,6 +21,7 @@ import {
   createMovementTools,
   createDiceTools,
   createAdjudicationTools,
+  setBoard,
   GameLoopState,
 } from '@5d/engine';
 import {
@@ -28,6 +29,8 @@ import {
   BranchId,
   BranchWindow,
   ActionSchema,
+  Board,
+  Turn,
   boardKey,
 } from '@5d/types';
 
@@ -125,7 +128,7 @@ export const appRouter = router({
       };
 
       await ctx.db.insert(games).values({
-        ...persistGameState(id, input.gameId, 'lobby', players, input.settings, state),
+        ...persistGameState(id, input.gameId, 'active', players, input.settings, state),
         createdAt: Date.now(),
       });
 
@@ -275,6 +278,7 @@ export const appRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not your turn' });
       }
 
+      const prevGlobalTurn = state.order.globalTurn;
       let nextTimelineCounter = Object.keys(state.branchTree.nodes).length;
       state = advanceTurn(
         state,
@@ -283,6 +287,27 @@ export const appRouter = router({
         (s, _window) => s, // half-action callback: no-op (client drives this)
         () => `TL${nextTimelineCounter++}`,
       );
+
+      // When the global turn rolls over, advance each active timeline to a new board.
+      // The new board is a copy of the previous turn's board — state carries forward.
+      if (state.order.globalTurn > prevGlobalTurn) {
+        const newTurn = state.order.globalTurn as Turn;
+        const boardsToAdvance: Board[] = [];
+        for (const [, board] of state.world.boards) {
+          if ((board.address.turn as number) === (prevGlobalTurn as number)) {
+            const advancedEntities = new Map(
+              [...board.entities].map(([id, entity]) => [
+                id,
+                { ...entity, location: { ...entity.location, turn: newTurn } },
+              ]),
+            );
+            boardsToAdvance.push({ ...board, address: { ...board.address, turn: newTurn }, entities: advancedEntities });
+          }
+        }
+        for (const newBoard of boardsToAdvance) {
+          state = { ...state, world: setBoard(state.world, newBoard) };
+        }
+      }
 
       const players = JSON.parse(row.players) as PlayerId[];
       const settings = JSON.parse(row.settings) as Record<string, unknown>;
