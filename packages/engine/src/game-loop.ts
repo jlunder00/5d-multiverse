@@ -11,12 +11,12 @@ import {
   EngineTools,
   boardKey,
 } from '@5d/types';
-import { getBoardAt, applyResultToWorld, addPendingBranch, updatePendingBranch } from './world-state.js';
-import { getCurrentPlayer, advancePlayer, advanceGlobalTurn, isGlobalTurnComplete } from './execution-order.js';
+import { getBoardAt, applyResultToWorld, addPendingBranch, updatePendingBranch, setBoard } from './world-state.js';
+import { getCurrentPlayer, advanceGlobalTurn } from './execution-order.js';
 import { openWindow, shouldClose, isHalfActionPending, markHalfActionUsed, computeHalfActionBoards } from './window-manager.js';
 import { createPendingBranch, crystallizeBranch } from './branch-tree.js';
 import { addParty } from './information-model.js';
-import { BranchTree, BranchWindow, Turn } from '@5d/types';
+import { BranchTree, BranchWindow, Turn, TimelineId, PendingBranch } from '@5d/types';
 
 export interface GameLoopState {
   world: WorldState;
@@ -181,8 +181,7 @@ export function checkWinCondition(state: GameLoopState, plugin: IGameDefinition)
 }
 
 /**
- * Advances to the next player, or if the global turn is complete, advances
- * the global turn and crystallizes any due windows.
+ * Advances the global turn and crystallizes any due windows.
  */
 export function advanceTurn(
   state: GameLoopState,
@@ -191,14 +190,6 @@ export function advanceTurn(
   onHalfAction: (state: GameLoopState, window: BranchWindow) => GameLoopState,
   nextTimelineId: () => string,
 ): GameLoopState {
-  const nextOrder = advancePlayer(state.order);
-
-  if (nextOrder === null) {
-    // Global turn complete — rotate priority and crystallize due windows
-    const rotated = advanceGlobalTurn(state.order);
-    const advanced = { ...state, order: rotated };
-    return crystallizeDueWindows(advanced, plugin, tools, onHalfAction, nextTimelineId);
-  }
-
-  return { ...state, order: nextOrder };
+  const order = advanceGlobalTurn(state.order);
+  return crystallizeDueWindows({ ...state, order }, plugin, tools, onHalfAction, nextTimelineId);
 }
