@@ -33,8 +33,14 @@ jobs:
       - name: Run engine tests
         run: pnpm --filter @5d/engine test
 
+      - name: Build engine
+        run: pnpm --filter @5d/engine build
+
       - name: Typecheck stub
         run: pnpm --filter @5d/stub typecheck
+
+      - name: Build stub
+        run: pnpm --filter @5d/stub build
 
       - name: Typecheck server
         run: pnpm --filter @5d/server typecheck
