@@ -64,14 +64,14 @@ export function BoardGrid({
 }: BoardGridProps) {
   const cellMap = new Map(cells.map((c) => [`${c.timelineId}:${c.turn}`, c]));
   const scrollRef = useRef<HTMLDivElement>(null);
-  const panStart = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number } | null>(null);
+  const panStart = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number; captured: boolean } | null>(null);
 
   function onPointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
     const el = scrollRef.current;
     if (!el) return;
-    panStart.current = { x: e.clientX, y: e.clientY, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop };
-    el.setPointerCapture(e.pointerId);
+    // Don't capture immediately — wait for actual drag movement so clicks reach children
+    panStart.current = { x: e.clientX, y: e.clientY, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop, captured: false };
   }
 
   function onPointerMove(e: React.PointerEvent) {
@@ -80,6 +80,12 @@ export function BoardGrid({
     if (!el) return;
     const dx = e.clientX - panStart.current.x;
     const dy = e.clientY - panStart.current.y;
+    // Only activate drag after moving 6px — below that it's a click, not a pan
+    if (!panStart.current.captured) {
+      if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+      el.setPointerCapture(e.pointerId);
+      panStart.current.captured = true;
+    }
     el.scrollLeft = panStart.current.scrollLeft - dx;
     el.scrollTop = panStart.current.scrollTop - dy;
   }

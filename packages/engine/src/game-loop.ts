@@ -1,6 +1,7 @@
 import {
   IGameDefinition,
   WorldState,
+  Board,
   ExecutionOrder,
   PlayerId,
   Action,
@@ -16,7 +17,7 @@ import { getCurrentPlayer, advanceGlobalTurn } from './execution-order.js';
 import { openWindow, shouldClose, isHalfActionPending, markHalfActionUsed, computeHalfActionBoards } from './window-manager.js';
 import { createPendingBranch, crystallizeBranch } from './branch-tree.js';
 import { addParty } from './information-model.js';
-import { BranchTree, BranchWindow, Turn, TimelineId, PendingBranch } from '@5d/types';
+import { BranchTree, BranchWindow, Turn, TimelineId, PendingBranch, EntityId } from '@5d/types';
 
 export interface GameLoopState {
   world: WorldState;
@@ -104,14 +105,17 @@ export function processAction(
     );
 
     if (existingBranch?.crystallizedTimelineId) {
-      // Add entity to existing ghost board
+      // Subsequent arrival: bootstrap-paradox duplicate — historical copy stays, arriving
+      // piece is inserted under a new entity ID so both coexist in the ghost board.
       if (movingEntity) {
         const ghostAddress = { timeline: existingBranch.crystallizedTimelineId, turn: originAddress.turn };
         const ghostBoard = getBoardAt(world, ghostAddress);
         if (ghostBoard) {
+          const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
           const entities = new Map(ghostBoard.entities);
-          entities.set(movingEntity.id, {
+          entities.set(arrivedId, {
             ...movingEntity,
+            id: arrivedId,
             location: { timeline: existingBranch.crystallizedTimelineId, turn: originAddress.turn, region: action.to.region },
           });
           world = setBoard(world, addParty({ ...ghostBoard, entities }, player));
@@ -134,13 +138,17 @@ export function processAction(
       branchTree = createPendingBranch(branchTree, pending);
       world = addPendingBranch(world, pending);
 
-      // Create ghost board copied from origin board
+      // Create ghost board copied from origin board (historical entities preserved).
+      // The arriving piece is added under a new entity ID — bootstrap paradox: both
+      // the historical copy and the arrived copy coexist in the new timeline.
       const originBoard = getBoardAt(world, originAddress);
       if (originBoard) {
         const entities = new Map(originBoard.entities);
         if (movingEntity) {
-          entities.set(movingEntity.id, {
+          const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
+          entities.set(arrivedId, {
             ...movingEntity,
+            id: arrivedId,
             location: { timeline: pendingTimelineId, turn: originAddress.turn, region: action.to.region },
           });
         }
@@ -238,6 +246,32 @@ export function crystallizeDueWindows(
  */
 export function checkWinCondition(state: GameLoopState, plugin: IGameDefinition): PlayerId | null {
   return plugin.winCondition.evaluate(state.world);
+}
+
+/**
+ * Copies each timeline's latest board forward by one turn.
+ * Must be called on every endTurn so all timelines — including ghost/pending ones
+ * anchored at past turns — advance in lockstep with the main timeline.
+ */
+export function advanceAllTimelines(world: WorldState): WorldState {
+  const latestPerTimeline = new Map<string, Board>();
+  for (const [, board] of world.boards) {
+    const tl = board.address.timeline as string;
+    const cur = latestPerTimeline.get(tl);
+    if (!cur || (board.address.turn as number) > (cur.address.turn as number)) {
+      latestPerTimeline.set(tl, board);
+    }
+  }
+  let result = world;
+  for (const board of latestPerTimeline.values()) {
+    const nextTurn = ((board.address.turn as number) + 1) as Turn;
+    result = setBoard(result, {
+      ...board,
+      address: { ...board.address, turn: nextTurn },
+      entities: new Map([...board.entities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn: nextTurn } }])),
+    });
+  }
+  return result;
 }
 
 /**

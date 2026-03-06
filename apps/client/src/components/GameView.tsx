@@ -123,13 +123,16 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     // Past boards are highlighted as time-travel targets when a piece is selected
     const isTimeTravelTarget = !!selectedPiece && t < activeTurn;
 
-    // Legal spatial move regions: only on the same active board as the selected piece
+    // Legal move regions: spatial on active board, all regions on time-travel target boards
     let legalMoveRegions: string[] | undefined;
     let selectedPieceRegion: string | undefined;
     if (selectedPiece && tl === selectedPiece.fromBoard.timelineId && t === selectedPiece.fromBoard.turn) {
       const from = freshRegion ?? selectedPiece.fromRegion;
       selectedPieceRegion = from;
       legalMoveRegions = STUB_ADJACENT[from] ?? [];
+    } else if (isTimeTravelTarget) {
+      // All regions on past boards are valid time-travel destinations
+      legalMoveRegions = regions.map((r) => r.id);
     }
 
     return {
@@ -149,23 +152,26 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   });
 
   function handlePieceClick(pieceId: string, cell: BoardCell) {
-    if (!isMyTurn) return;
-    if (cell.isGhost) return; // ghost boards are pending — not actionable
+    console.log('[pieceClick]', pieceId, 'isMyTurn:', isMyTurn, 'isGhost:', cell.isGhost, 'playerId:', playerId, 'activeTurn:', activeTurn);
+    if (!isMyTurn) { console.log('[pieceClick] blocked: not my turn'); return; }
+    if (cell.isGhost) { console.log('[pieceClick] blocked: ghost board'); return; }
     const piece = cell.pieces.find((p) => p.id === pieceId);
-    if (!piece || piece.owner !== playerId) return;
+    console.log('[pieceClick] piece:', piece);
+    if (!piece || piece.owner !== playerId) { console.log('[pieceClick] blocked: owner mismatch or not found', piece?.owner, '!==', playerId); return; }
     if (selectedPiece?.id === pieceId) { clearSelection(); return; }
 
     // Normalize to the active board so actions always submit from the present.
-    // The user may click a piece on a past board just to identify it.
     const activeBoard = data.boards.find(b =>
       !b.pluginData?.isPendingBranch &&
       (b.address.turn as number) === activeTurn &&
       b.entities.some(([id]) => id === pieceId)
     );
-    if (!activeBoard) return; // piece doesn't exist at the current turn
+    console.log('[pieceClick] activeBoard:', activeBoard ? `${activeBoard.address.timeline as string}:T${activeBoard.address.turn as number}` : 'NOT FOUND', 'boards searched:', data.boards.length);
+    if (!activeBoard) { console.log('[pieceClick] blocked: no activeBoard at turn', activeTurn, 'boards:', data.boards.map(b => `${b.address.timeline as string}:T${b.address.turn as number}`)); return; }
     const activeEntry = activeBoard.entities.find(([id]) => id === pieceId);
     const activeLoc = (activeEntry?.[1] as { location?: { region?: string } } | undefined)?.location;
-    if (!activeLoc?.region) return;
+    console.log('[pieceClick] activeLoc:', activeLoc);
+    if (!activeLoc?.region) { console.log('[pieceClick] blocked: no region on activeEntry'); return; }
 
     setSelectedPiece({
       id: pieceId,
@@ -176,7 +182,17 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   }
 
   function handleRegionClick(regionId: string, cell: BoardCell) {
-    if (!isMyTurn || !selectedPiece) return;
+    console.log('[regionClick]', regionId, cell.timelineId, 'T' + cell.turn, 'isMyTurn:', isMyTurn, 'playerId:', playerId, 'pieces:', cell.pieces.map(p => p.owner + '@' + p.region));
+    if (!isMyTurn) return;
+
+    // No piece selected yet: clicking a region containing your piece selects it.
+    if (!selectedPiece) {
+      if (cell.isGhost) return;
+      const myPiece = cell.pieces.find((p) => p.owner === playerId && p.region === regionId);
+      if (myPiece) handlePieceClick(myPiece.id, cell);
+      return;
+    }
+
     const fromRegion = freshRegion ?? selectedPiece.fromRegion;
 
     if (cell.timelineId === selectedPiece.fromBoard.timelineId && cell.turn === activeTurn) {

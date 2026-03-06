@@ -2,9 +2,8 @@ import { ExecutionOrder, PlayerId, Turn } from '@5d/types';
 
 /**
  * Creates the initial execution order for a game.
- * globalTurn increments on every player's endTurn (not once per round).
- * The priority queue never rotates — same player order every turn.
- * At any turn T, the player at index (T-1) % n takes their turn.
+ * globalTurn increments on every player's endTurn.
+ * At turn T, the player at index (T-1) % n takes their turn.
  */
 export function createExecutionOrder(players: PlayerId[], globalTurn: Turn): ExecutionOrder {
   if (players.length === 0) throw new Error('At least one player required');
@@ -27,7 +26,6 @@ export function getCurrentPlayer(order: ExecutionOrder): PlayerId {
 /**
  * Advances to the next player and increments globalTurn.
  * Called once per endTurn — each player's turn is one global turn.
- * Queue order never changes.
  */
 export function advanceGlobalTurn(order: ExecutionOrder): ExecutionOrder {
   const n = order.priorityQueue.length;
@@ -38,14 +36,12 @@ export function advanceGlobalTurn(order: ExecutionOrder): ExecutionOrder {
   };
 }
 
-/**
- * @deprecated Use advanceGlobalTurn directly — each endTurn is one global turn.
- */
+/** @deprecated Not used in current model. */
 export function advancePlayer(order: ExecutionOrder): ExecutionOrder | null {
-  return null; // no longer used; kept for compatibility
+  return null;
 }
 
-/** @deprecated Each endTurn advances globalTurn; there is no separate "global turn complete" concept. */
+/** @deprecated Not used in current model. */
 export function isGlobalTurnComplete(_order: ExecutionOrder): boolean {
   return false;
 }

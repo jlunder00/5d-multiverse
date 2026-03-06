@@ -153,20 +153,11 @@ const actionEvaluator: IActionEvaluator = {
 // ---------------------------------------------------------------------------
 
 const branchTrigger: IBranchTrigger = {
-  shouldBranch(action: Action, result: ActionResult, context: ActionContext): boolean {
-    // Stub only implements temporal-backward moves; a full plugin would also check
-    // lateral moves that land on past boards (destination.turn < timeline's present turn).
-    if ((action.type as string) !== 'move_to_past' || !result.success) return false;
-    // Return false if a pending branch already exists at the destination address —
-    // subsequent arrivals merge into the existing ghost board instead.
-    for (const b of context.world.pendingBranches.values()) {
-      if (
-        b.originAddress.timeline === action.to.timeline &&
-        b.originAddress.turn === action.to.turn &&
-        !b.crystallized
-      ) return false;
-    }
-    return true;
+  shouldBranch(action: Action, result: ActionResult, _context: ActionContext): boolean {
+    // Return true for any successful move_to_past.
+    // The engine handles both cases: new branch creation (first arrival) and
+    // merging into an existing ghost board (subsequent arrivals).
+    return (action.type as string) === 'move_to_past' && result.success;
   },
   getBranchOrigin(action: Action): BoardAddress {
     return { timeline: action.to.timeline, turn: action.to.turn };

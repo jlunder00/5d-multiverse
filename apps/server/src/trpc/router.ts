@@ -16,6 +16,7 @@ import {
   createExecutionOrder,
   processAction,
   advanceTurn,
+  advanceAllTimelines,
   checkWinCondition,
   filterWorldForPlayer,
   createMovementTools,
@@ -29,8 +30,6 @@ import {
   BranchId,
   BranchWindow,
   ActionSchema,
-  Board,
-  Turn,
   boardKey,
 } from '@5d/types';
 
@@ -288,25 +287,10 @@ export const appRouter = router({
         () => `TL${nextTimelineCounter++}`,
       );
 
-      // When the global turn rolls over, advance each active timeline to a new board.
-      // The new board is a copy of the previous turn's board — state carries forward.
+      // Every endTurn: advance every timeline's latest board by one turn.
+      // This includes ghost/pending timelines so they stay in sync.
       if (state.order.globalTurn > prevGlobalTurn) {
-        const newTurn = state.order.globalTurn as Turn;
-        const boardsToAdvance: Board[] = [];
-        for (const [, board] of state.world.boards) {
-          if ((board.address.turn as number) === (prevGlobalTurn as number)) {
-            const advancedEntities = new Map(
-              [...board.entities].map(([id, entity]) => [
-                id,
-                { ...entity, location: { ...entity.location, turn: newTurn } },
-              ]),
-            );
-            boardsToAdvance.push({ ...board, address: { ...board.address, turn: newTurn }, entities: advancedEntities });
-          }
-        }
-        for (const newBoard of boardsToAdvance) {
-          state = { ...state, world: setBoard(state.world, newBoard) };
-        }
+        state = { ...state, world: advanceAllTimelines(state.world) };
       }
 
       const players = JSON.parse(row.players) as PlayerId[];
