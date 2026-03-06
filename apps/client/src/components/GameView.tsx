@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { trpc } from '../trpc';
 import { BoardGrid, BoardCell, PieceInfo, RegionInfo } from './BoardGrid';
 import { PlayerSwitcher } from './PlayerSwitcher';
+import { RightPanel } from './RightPanel';
 
 interface SelectedPiece {
   id: string;
@@ -268,18 +270,31 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
         )}
       </div>
 
-      {/* Main board grid */}
-      <main className="flex-1 overflow-auto p-3">
-        <BoardGrid
-          cells={cells}
-          maxTurn={maxTurn}
-          timelines={timelines}
-          selectedCell={selectedBoard}
-          onCellClick={handleCellClick}
-          onPieceClick={handlePieceClick}
-          onRegionClick={handleRegionClick}
-        />
-      </main>
+      {/* Main content: board grid + right panel */}
+      <PanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+        <Panel defaultSize={75} minSize={40}>
+          <main className="h-full overflow-hidden p-3">
+            <BoardGrid
+              cells={cells}
+              maxTurn={maxTurn}
+              timelines={timelines}
+              selectedCell={selectedBoard}
+              onCellClick={handleCellClick}
+              onPieceClick={handlePieceClick}
+              onRegionClick={handleRegionClick}
+            />
+          </main>
+        </Panel>
+        <PanelResizeHandle className="w-1 bg-gray-700 hover:bg-blue-500 transition-colors cursor-col-resize" />
+        <Panel defaultSize={25} minSize={15} collapsible>
+          <RightPanel
+            selectedBoard={selectedBoard}
+            boards={data.boards}
+            pendingBranches={data.pendingBranches}
+            onBoardSelect={(addr) => setSelectedBoard(addr)}
+          />
+        </Panel>
+      </PanelGroup>
 
       {/* Footer actions */}
       <footer className="border-t border-gray-800 px-4 py-3 flex items-center justify-between gap-4">
