@@ -150,16 +150,28 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
   function handlePieceClick(pieceId: string, cell: BoardCell) {
     if (!isMyTurn) return;
-    // Only select pieces on current-turn, non-ghost boards
-    if (cell.turn !== activeTurn || cell.isGhost) return;
+    if (cell.isGhost) return; // ghost boards are pending — not actionable
     const piece = cell.pieces.find((p) => p.id === pieceId);
     if (!piece || piece.owner !== playerId) return;
     if (selectedPiece?.id === pieceId) { clearSelection(); return; }
+
+    // Normalize to the active board so actions always submit from the present.
+    // The user may click a piece on a past board just to identify it.
+    const activeBoard = data.boards.find(b =>
+      !b.pluginData?.isPendingBranch &&
+      (b.address.turn as number) === activeTurn &&
+      b.entities.some(([id]) => id === pieceId)
+    );
+    if (!activeBoard) return; // piece doesn't exist at the current turn
+    const activeEntry = activeBoard.entities.find(([id]) => id === pieceId);
+    const activeLoc = (activeEntry?.[1] as { location?: { region?: string } } | undefined)?.location;
+    if (!activeLoc?.region) return;
+
     setSelectedPiece({
       id: pieceId,
       owner: piece.owner,
-      fromBoard: { timelineId: cell.timelineId, turn: cell.turn },
-      fromRegion: piece.region,
+      fromBoard: { timelineId: activeBoard.address.timeline as string, turn: activeTurn },
+      fromRegion: activeLoc.region,
     });
   }
 
