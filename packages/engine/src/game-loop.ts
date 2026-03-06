@@ -80,6 +80,11 @@ export function processAction(
     throw new Error(`Invalid action: ${validation.reason ?? 'unknown reason'}`);
   }
 
+  // Capture moving entity BEFORE applyResultToWorld removes it from the source board
+  const movingEntity = action.entityId
+    ? getBoardAt(state.world, address)?.entities.get(action.entityId)
+    : undefined;
+
   const result: ActionResult = plugin.actionEvaluator.evaluate(action, context);
   let world = applyResultToWorld(state.world, address, result);
 
@@ -89,41 +94,76 @@ export function processAction(
 
   if (result.success && plugin.branchTrigger.shouldBranch(action, result, context)) {
     const originAddress = plugin.branchTrigger.getBranchOrigin(action, result, context);
-    const branchId = `branch-${action.id}` as BranchId;
-    const pending = {
-      id: branchId,
-      originAddress,
-      triggerActionId: action.id,
-      initiatedBy: player,
-      originColumnPlayer: player,
-      crystallized: false,
-      crystallizedAtGlobalTurn: undefined,
-      crystallizedTimelineId: undefined,
-    };
 
-    branchTree = createPendingBranch(branchTree, pending);
-    world = addPendingBranch(world, pending);
-
-    // Track initiator as party on the pending board
-    const originBoard = getBoardAt(world, originAddress);
-    if (originBoard) {
-      const updatedBoard = addParty(originBoard, player);
-      world = { ...world, boards: new Map(world.boards).set(boardKey(originAddress), updatedBoard) };
-    }
-
-    // Open sliding window
-    const n = state.order.priorityQueue.length;
-    const halfActionBoards = computeHalfActionBoards([address], originAddress);
-    const window = openWindow(
-      branchId,
-      player,
-      player,
-      state.order.globalTurn,
-      n,
-      plugin.windowMode,
-      halfActionBoards,
+    // Check for existing branch at this origin (subsequent arrival)
+    const existingBranch = [...world.pendingBranches.values()].find(
+      (b) =>
+        b.originAddress.timeline === originAddress.timeline &&
+        b.originAddress.turn === originAddress.turn &&
+        !b.crystallized,
     );
-    windows = new Map(windows).set(branchId, window);
+
+    if (existingBranch?.crystallizedTimelineId) {
+      // Add entity to existing ghost board
+      if (movingEntity) {
+        const ghostAddress = { timeline: existingBranch.crystallizedTimelineId, turn: originAddress.turn };
+        const ghostBoard = getBoardAt(world, ghostAddress);
+        if (ghostBoard) {
+          const entities = new Map(ghostBoard.entities);
+          entities.set(movingEntity.id, {
+            ...movingEntity,
+            location: { timeline: existingBranch.crystallizedTimelineId, turn: originAddress.turn, region: action.to.region },
+          });
+          world = setBoard(world, addParty({ ...ghostBoard, entities }, player));
+        }
+      }
+    } else {
+      // New branch — pre-assign the pending timeline ID
+      const branchId = `branch-${action.id}` as BranchId;
+      const pendingTimelineId = `TL-${branchId}` as TimelineId;
+      const pending: PendingBranch = {
+        id: branchId,
+        originAddress,
+        triggerActionId: action.id,
+        initiatedBy: player,
+        originColumnPlayer: player,
+        crystallized: false,
+        crystallizedTimelineId: pendingTimelineId,
+      };
+
+      branchTree = createPendingBranch(branchTree, pending);
+      world = addPendingBranch(world, pending);
+
+      // Create ghost board copied from origin board
+      const originBoard = getBoardAt(world, originAddress);
+      if (originBoard) {
+        const entities = new Map(originBoard.entities);
+        if (movingEntity) {
+          entities.set(movingEntity.id, {
+            ...movingEntity,
+            location: { timeline: pendingTimelineId, turn: originAddress.turn, region: action.to.region },
+          });
+        }
+        world = setBoard(world, addParty({
+          ...originBoard,
+          address: { timeline: pendingTimelineId, turn: originAddress.turn },
+          entities,
+          pluginData: { ...originBoard.pluginData, isPendingBranch: true, originAddress },
+        }, player));
+      }
+
+      // Open sliding window
+      const window = openWindow(
+        branchId,
+        player,
+        player,
+        state.order.globalTurn,
+        state.order.priorityQueue.length,
+        plugin.windowMode,
+        computeHalfActionBoards([address], originAddress),
+      );
+      windows = new Map(windows).set(branchId, window);
+    }
   }
 
   return { ...state, world, branchTree, windows };
