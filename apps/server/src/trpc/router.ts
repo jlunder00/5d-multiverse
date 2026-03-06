@@ -16,11 +16,13 @@ import {
   createExecutionOrder,
   processAction,
   advanceTurn,
+  advanceAllTimelines,
   checkWinCondition,
   filterWorldForPlayer,
   createMovementTools,
   createDiceTools,
   createAdjudicationTools,
+  setBoard,
   GameLoopState,
 } from '@5d/engine';
 import {
@@ -125,7 +127,7 @@ export const appRouter = router({
       };
 
       await ctx.db.insert(games).values({
-        ...persistGameState(id, input.gameId, 'lobby', players, input.settings, state),
+        ...persistGameState(id, input.gameId, 'active', players, input.settings, state),
         createdAt: Date.now(),
       });
 
@@ -165,7 +167,7 @@ export const appRouter = router({
       const filtered = filterWorldForPlayer(
         state.world,
         playerId,
-        input.fogSetting,
+        'full_information',
         activePlayer,
       );
 
@@ -275,6 +277,7 @@ export const appRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not your turn' });
       }
 
+      const prevGlobalTurn = state.order.globalTurn;
       let nextTimelineCounter = Object.keys(state.branchTree.nodes).length;
       state = advanceTurn(
         state,
@@ -283,6 +286,12 @@ export const appRouter = router({
         (s, _window) => s, // half-action callback: no-op (client drives this)
         () => `TL${nextTimelineCounter++}`,
       );
+
+      // Every endTurn: advance every timeline's latest board by one turn.
+      // This includes ghost/pending timelines so they stay in sync.
+      if (state.order.globalTurn > prevGlobalTurn) {
+        state = { ...state, world: advanceAllTimelines(state.world) };
+      }
 
       const players = JSON.parse(row.players) as PlayerId[];
       const settings = JSON.parse(row.settings) as Record<string, unknown>;

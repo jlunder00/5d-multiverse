@@ -1,6 +1,7 @@
 import {
   IGameDefinition,
   WorldState,
+  Board,
   ExecutionOrder,
   PlayerId,
   Action,
@@ -11,12 +12,12 @@ import {
   EngineTools,
   boardKey,
 } from '@5d/types';
-import { getBoardAt, applyResultToWorld, addPendingBranch, updatePendingBranch } from './world-state.js';
-import { getCurrentPlayer, advancePlayer, advanceGlobalTurn, isGlobalTurnComplete } from './execution-order.js';
+import { getBoardAt, applyResultToWorld, addPendingBranch, updatePendingBranch, setBoard } from './world-state.js';
+import { getCurrentPlayer, advanceGlobalTurn } from './execution-order.js';
 import { openWindow, shouldClose, isHalfActionPending, markHalfActionUsed, computeHalfActionBoards } from './window-manager.js';
 import { createPendingBranch, crystallizeBranch } from './branch-tree.js';
 import { addParty } from './information-model.js';
-import { BranchTree, BranchWindow, Turn } from '@5d/types';
+import { BranchTree, BranchWindow, Turn, TimelineId, PendingBranch, EntityId } from '@5d/types';
 
 export interface GameLoopState {
   world: WorldState;
@@ -80,6 +81,11 @@ export function processAction(
     throw new Error(`Invalid action: ${validation.reason ?? 'unknown reason'}`);
   }
 
+  // Capture moving entity BEFORE applyResultToWorld removes it from the source board
+  const movingEntity = action.entityId
+    ? getBoardAt(state.world, address)?.entities.get(action.entityId)
+    : undefined;
+
   const result: ActionResult = plugin.actionEvaluator.evaluate(action, context);
   let world = applyResultToWorld(state.world, address, result);
 
@@ -89,41 +95,83 @@ export function processAction(
 
   if (result.success && plugin.branchTrigger.shouldBranch(action, result, context)) {
     const originAddress = plugin.branchTrigger.getBranchOrigin(action, result, context);
-    const branchId = `branch-${action.id}` as BranchId;
-    const pending = {
-      id: branchId,
-      originAddress,
-      triggerActionId: action.id,
-      initiatedBy: player,
-      originColumnPlayer: player,
-      crystallized: false,
-      crystallizedAtGlobalTurn: undefined,
-      crystallizedTimelineId: undefined,
-    };
 
-    branchTree = createPendingBranch(branchTree, pending);
-    world = addPendingBranch(world, pending);
-
-    // Track initiator as party on the pending board
-    const originBoard = getBoardAt(world, originAddress);
-    if (originBoard) {
-      const updatedBoard = addParty(originBoard, player);
-      world = { ...world, boards: new Map(world.boards).set(boardKey(originAddress), updatedBoard) };
-    }
-
-    // Open sliding window
-    const n = state.order.priorityQueue.length;
-    const halfActionBoards = computeHalfActionBoards([address], originAddress);
-    const window = openWindow(
-      branchId,
-      player,
-      player,
-      state.order.globalTurn,
-      n,
-      plugin.windowMode,
-      halfActionBoards,
+    // Check for existing branch at this origin (subsequent arrival)
+    const existingBranch = [...world.pendingBranches.values()].find(
+      (b) =>
+        b.originAddress.timeline === originAddress.timeline &&
+        b.originAddress.turn === originAddress.turn &&
+        !b.crystallized,
     );
-    windows = new Map(windows).set(branchId, window);
+
+    if (existingBranch?.crystallizedTimelineId) {
+      // Subsequent arrival: bootstrap-paradox duplicate — historical copy stays, arriving
+      // piece is inserted under a new entity ID so both coexist in the ghost board.
+      if (movingEntity) {
+        const ghostAddress = { timeline: existingBranch.crystallizedTimelineId, turn: originAddress.turn };
+        const ghostBoard = getBoardAt(world, ghostAddress);
+        if (ghostBoard) {
+          const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
+          const entities = new Map(ghostBoard.entities);
+          entities.set(arrivedId, {
+            ...movingEntity,
+            id: arrivedId,
+            location: { timeline: existingBranch.crystallizedTimelineId, turn: originAddress.turn, region: action.to.region },
+          });
+          world = setBoard(world, addParty({ ...ghostBoard, entities }, player));
+        }
+      }
+    } else {
+      // New branch — pre-assign the pending timeline ID
+      const branchId = `branch-${action.id}` as BranchId;
+      const pendingTimelineId = `TL-${branchId}` as TimelineId;
+      const pending: PendingBranch = {
+        id: branchId,
+        originAddress,
+        triggerActionId: action.id,
+        initiatedBy: player,
+        originColumnPlayer: player,
+        crystallized: false,
+        crystallizedTimelineId: pendingTimelineId,
+      };
+
+      branchTree = createPendingBranch(branchTree, pending);
+      world = addPendingBranch(world, pending);
+
+      // Create ghost board copied from origin board (historical entities preserved).
+      // The arriving piece is added under a new entity ID — bootstrap paradox: both
+      // the historical copy and the arrived copy coexist in the new timeline.
+      const originBoard = getBoardAt(world, originAddress);
+      if (originBoard) {
+        const entities = new Map(originBoard.entities);
+        if (movingEntity) {
+          const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
+          entities.set(arrivedId, {
+            ...movingEntity,
+            id: arrivedId,
+            location: { timeline: pendingTimelineId, turn: originAddress.turn, region: action.to.region },
+          });
+        }
+        world = setBoard(world, addParty({
+          ...originBoard,
+          address: { timeline: pendingTimelineId, turn: originAddress.turn },
+          entities,
+          pluginData: { ...originBoard.pluginData, isPendingBranch: true, originAddress },
+        }, player));
+      }
+
+      // Open sliding window
+      const window = openWindow(
+        branchId,
+        player,
+        player,
+        state.order.globalTurn,
+        state.order.priorityQueue.length,
+        plugin.windowMode,
+        computeHalfActionBoards([address], originAddress),
+      );
+      windows = new Map(windows).set(branchId, window);
+    }
   }
 
   return { ...state, world, branchTree, windows };
@@ -153,15 +201,35 @@ export function crystallizeDueWindows(
       current = { ...current, windows };
     }
 
-    // Crystallize
-    const newTimelineId = nextTimelineId() as ReturnType<typeof nextTimelineId> & string;
+    // Crystallize using pre-assigned ID (nextTimelineId ignored)
+    const pendingBranch = current.world.pendingBranches.get(branchId);
+    if (!pendingBranch?.crystallizedTimelineId)
+      throw new Error(`No crystallizedTimelineId on branch ${branchId}`);
+    const newTimelineId = pendingBranch.crystallizedTimelineId;
     const globalTurn = current.order.globalTurn as Turn;
-    const branchTree = crystallizeBranch(current.branchTree, branchId, newTimelineId as any, globalTurn);
+    const branchTree = crystallizeBranch(current.branchTree, branchId, newTimelineId, globalTurn);
+    let world = updatePendingBranch(current.world, branchTree.pendingBranches[branchId]!);
 
-    // Update the pending branch in world state
-    const updatedPending = branchTree.pendingBranches[branchId];
-    if (!updatedPending) throw new Error(`Branch missing after crystallize: ${branchId}`);
-    const world = updatePendingBranch(current.world, updatedPending);
+    // Strip isPendingBranch flag from ghost board
+    const ghostAddress = { timeline: newTimelineId, turn: pendingBranch.originAddress.turn };
+    const ghostBoard = getBoardAt(world, ghostAddress);
+    if (ghostBoard) {
+      const { isPendingBranch: _a, originAddress: _b, ...rest } = ghostBoard.pluginData as Record<string, unknown>;
+      world = setBoard(world, { ...ghostBoard, pluginData: rest });
+    }
+
+    // Create catch-up boards from originTurn+1 to currentGlobalTurn
+    for (let t = (pendingBranch.originAddress.turn as number) + 1; t <= (globalTurn as number); t++) {
+      const prev = getBoardAt(world, { timeline: newTimelineId, turn: (t - 1) as Turn });
+      if (prev) {
+        const turn = t as Turn;
+        world = setBoard(world, {
+          ...prev,
+          address: { timeline: newTimelineId, turn },
+          entities: new Map([...prev.entities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn } }])),
+        });
+      }
+    }
 
     // Close the window
     const windows = new Map(current.windows);
@@ -181,8 +249,33 @@ export function checkWinCondition(state: GameLoopState, plugin: IGameDefinition)
 }
 
 /**
- * Advances to the next player, or if the global turn is complete, advances
- * the global turn and crystallizes any due windows.
+ * Copies each timeline's latest board forward by one turn.
+ * Must be called on every endTurn so all timelines — including ghost/pending ones
+ * anchored at past turns — advance in lockstep with the main timeline.
+ */
+export function advanceAllTimelines(world: WorldState): WorldState {
+  const latestPerTimeline = new Map<string, Board>();
+  for (const [, board] of world.boards) {
+    const tl = board.address.timeline as string;
+    const cur = latestPerTimeline.get(tl);
+    if (!cur || (board.address.turn as number) > (cur.address.turn as number)) {
+      latestPerTimeline.set(tl, board);
+    }
+  }
+  let result = world;
+  for (const board of latestPerTimeline.values()) {
+    const nextTurn = ((board.address.turn as number) + 1) as Turn;
+    result = setBoard(result, {
+      ...board,
+      address: { ...board.address, turn: nextTurn },
+      entities: new Map([...board.entities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn: nextTurn } }])),
+    });
+  }
+  return result;
+}
+
+/**
+ * Advances the global turn and crystallizes any due windows.
  */
 export function advanceTurn(
   state: GameLoopState,
@@ -191,14 +284,6 @@ export function advanceTurn(
   onHalfAction: (state: GameLoopState, window: BranchWindow) => GameLoopState,
   nextTimelineId: () => string,
 ): GameLoopState {
-  const nextOrder = advancePlayer(state.order);
-
-  if (nextOrder === null) {
-    // Global turn complete — rotate priority and crystallize due windows
-    const rotated = advanceGlobalTurn(state.order);
-    const advanced = { ...state, order: rotated };
-    return crystallizeDueWindows(advanced, plugin, tools, onHalfAction, nextTimelineId);
-  }
-
-  return { ...state, order: nextOrder };
+  const order = advanceGlobalTurn(state.order);
+  return crystallizeDueWindows({ ...state, order }, plugin, tools, onHalfAction, nextTimelineId);
 }

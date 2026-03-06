@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+data.db
+.env
+docs/plans/
+apps/server/data.db-wal
+apps/server/data.db-shm
