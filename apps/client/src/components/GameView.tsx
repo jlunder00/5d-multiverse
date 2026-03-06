@@ -1,14 +1,13 @@
 import { useState } from 'react';
 import { trpc } from '../trpc';
-import { BoardGrid, BoardCell } from './BoardGrid';
-import { BoardDetail } from './BoardDetail';
+import { BoardGrid, BoardCell, PieceInfo, RegionInfo } from './BoardGrid';
 import { PlayerSwitcher } from './PlayerSwitcher';
 
-type ActionMode = 'idle' | 'selecting_move_dest' | 'selecting_time_branch_dest';
-
-interface SelectedBoard {
-  timelineId: string;
-  turn: number;
+interface SelectedPiece {
+  id: string;
+  owner: string;
+  fromBoard: { timelineId: string; turn: number };
+  fromRegion: string;
 }
 
 interface GameViewProps {
@@ -18,36 +17,75 @@ interface GameViewProps {
   onLeave: () => void;
 }
 
+// Adjacent regions for the stub cross-map. Game-agnostic code won't need this —
+// legal destinations will come from the server eventually.
+const STUB_ADJACENT: Record<string, string[]> = {
+  C: ['N', 'S', 'E', 'W'],
+  N: ['C'], S: ['C'], E: ['C'], W: ['C'],
+};
+
+function buildActionId() {
+  return `action-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function parseEntities(raw: [string, unknown][]): PieceInfo[] {
+  return raw.map(([id, e]) => {
+    const ent = e as { owner: string; type: string; location: { region: string } };
+    return { id, owner: ent.owner, type: ent.type, region: ent.location.region };
+  });
+}
+
+function parseRegions(raw: [string, unknown][]): RegionInfo[] {
+  return raw.map(([, r]) => {
+    const reg = r as { id: string; owner: string | null };
+    return { id: reg.id, owner: reg.owner };
+  });
+}
+
 export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameViewProps) {
-  const [selectedBoard, setSelectedBoard] = useState<SelectedBoard | null>(null);
-  const [selectedEntityId, setSelectedEntityId] = useState<string | null>(null);
-  const [actionMode, setActionMode] = useState<ActionMode>('idle');
+  const [selectedPiece, setSelectedPiece] = useState<SelectedPiece | null>(null);
+  const [timeBranchMode, setTimeBranchMode] = useState(false);
+  const [selectedBoard, setSelectedBoard] = useState<{ timelineId: string; turn: number } | null>(null);
 
   const state = trpc.getVisibleState.useQuery(
     { gameId, fogSetting: 'current_turn_fog' },
     { refetchInterval: 2000 },
   );
 
-  const endTurn = trpc.endTurn.useMutation({ onSuccess: () => state.refetch() });
-  const submitAction = trpc.submitAction.useMutation({ onSuccess: () => { state.refetch(); setActionMode('idle'); } });
+  const endTurnMut = trpc.endTurn.useMutation({ onSuccess: () => { state.refetch(); clearSelection(); } });
+  const submitAction = trpc.submitAction.useMutation({
+    onSuccess: () => { state.refetch(); clearSelection(); },
+  });
 
-  if (state.isLoading) {
-    return <div className="flex items-center justify-center min-h-screen bg-gray-950 text-gray-400">Loading…</div>;
+  function clearSelection() {
+    setSelectedPiece(null);
+    setTimeBranchMode(false);
   }
-  if (state.isError) {
-    return <div className="flex items-center justify-center min-h-screen bg-gray-950 text-red-400">Error: {state.error.message}</div>;
-  }
+
+  if (state.isLoading) return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-950 text-gray-400">Loading…</div>
+  );
+  if (state.isError) return (
+    <div className="flex items-center justify-center min-h-screen bg-gray-950 text-red-400">
+      Error: {state.error.message}
+    </div>
+  );
 
   const data = state.data!;
   const isMyTurn = data.currentPlayer === playerId;
-  const players = data.boards.flatMap((b) => b.economies.map(([p]) => p as string));
-  const uniquePlayers = [...new Set(players)];
 
-  // Derive grid dimensions
+  // Unique players from economies on any board
+  const allPlayers = [...new Set(
+    data.boards.flatMap((b) => b.economies.map(([p]) => p as string))
+  )];
+
+  // Active board = current turn's board on TL0 (the main timeline)
+  const activeTurn = data.globalTurn;
+  const activeTimeline = 'TL0';
+
   const timelines = [...new Set(data.boards.map((b) => b.address.timeline as string))].sort();
-  const maxTurn = Math.max(data.globalTurn, ...data.boards.map((b) => b.address.turn as number));
+  const maxTurn = Math.max(activeTurn, ...data.boards.map((b) => b.address.turn as number));
 
-  // Build pending set
   const pendingKeys = new Set(
     data.pendingBranches.map(([, pb]) => {
       const p = pb as { originAddress: { timeline: string; turn: number } };
@@ -55,225 +93,208 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     }),
   );
 
-  const cells: BoardCell[] = data.boards.map((b) => ({
-    timelineId: b.address.timeline as string,
-    turn: b.address.turn as number,
-    exists: true,
-    isPending: pendingKeys.has(`${b.address.timeline}:${b.address.turn}`),
-    isActive: isMyTurn && selectedBoard?.timelineId === b.address.timeline && selectedBoard?.turn === b.address.turn,
-    pluginData: b.pluginData,
-  }));
+  // Build cells with highlight info
+  const cells: BoardCell[] = data.boards.map((b) => {
+    const tl = b.address.timeline as string;
+    const t = b.address.turn as number;
+    const pieces = parseEntities(b.entities);
+    const regions = parseRegions(b.regions);
 
-  // The currently selected board's full data
-  const selectedBoardData = selectedBoard
-    ? data.boards.find(
-        (b) => b.address.timeline === selectedBoard.timelineId && b.address.turn === selectedBoard.turn,
-      )
-    : null;
+    // Time branch target: any past board when in time branch mode
+    const isTimeBranchTarget = timeBranchMode && t < activeTurn;
 
-  function buildActionId() {
-    return `action-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    // Legal move regions: adjacent to selected piece's region, on this same board
+    let legalMoveRegions: string[] | undefined;
+    let selectedPieceRegion: string | undefined;
+    if (
+      selectedPiece &&
+      !timeBranchMode &&
+      tl === selectedPiece.fromBoard.timelineId &&
+      t === selectedPiece.fromBoard.turn
+    ) {
+      selectedPieceRegion = selectedPiece.fromRegion;
+      legalMoveRegions = STUB_ADJACENT[selectedPiece.fromRegion] ?? [];
+    }
+
+    return {
+      timelineId: tl,
+      turn: t,
+      exists: true,
+      isPending: pendingKeys.has(`${tl}:${t}`),
+      isActive: tl === activeTimeline && t === activeTurn,
+      pieces,
+      regions,
+      ...(isTimeBranchTarget ? { isTimeBranchTarget: true } : {}),
+      ...(legalMoveRegions ? { legalMoveRegions } : {}),
+      ...(selectedPieceRegion ? { selectedPieceRegion } : {}),
+    };
+  });
+
+  function handlePieceClick(pieceId: string, cell: BoardCell) {
+    if (!isMyTurn) return;
+    const piece = cell.pieces.find((p) => p.id === pieceId);
+    if (!piece) return;
+    if (piece.owner !== playerId) return; // can't select opponent's piece
+
+    // Toggle selection
+    if (selectedPiece?.id === pieceId) { clearSelection(); return; }
+
+    setSelectedPiece({
+      id: pieceId,
+      owner: piece.owner,
+      fromBoard: { timelineId: cell.timelineId, turn: cell.turn },
+      fromRegion: piece.region,
+    });
+    setTimeBranchMode(false);
+  }
+
+  function handleRegionClick(regionId: string, cell: BoardCell) {
+    if (!isMyTurn || !selectedPiece || timeBranchMode) return;
+
+    const legalRegions = STUB_ADJACENT[selectedPiece.fromRegion] ?? [];
+    if (!legalRegions.includes(regionId)) return;
+
+    // Same board move
+    const { fromBoard, fromRegion } = selectedPiece;
+    submitAction.mutate({
+      gameId,
+      boardAddress: { timeline: fromBoard.timelineId, turn: fromBoard.turn },
+      action: {
+        id: buildActionId() as any,
+        type: 'move' as any,
+        player: playerId as any,
+        from: { timeline: fromBoard.timelineId as any, turn: fromBoard.turn as any, region: fromRegion as any },
+        to: { timeline: fromBoard.timelineId as any, turn: fromBoard.turn as any, region: regionId as any },
+        entityId: selectedPiece.id as any,
+        payload: {},
+        submittedAt: Date.now(),
+      },
+    });
   }
 
   function handleCellClick(cell: BoardCell) {
-    if (actionMode === 'selecting_time_branch_dest' && selectedBoard) {
-      // Submit a time_branch action targeting this past board
-      if (cell.turn >= (selectedBoard?.turn ?? 0)) {
-        alert('Time branch destination must be a past turn.');
-        return;
-      }
+    if (timeBranchMode && cell.turn < activeTurn) {
+      // Submit time branch to this past board
+      const srcBoard = { timelineId: activeTimeline, turn: activeTurn };
       submitAction.mutate({
         gameId,
-        boardAddress: { timeline: selectedBoard.timelineId, turn: selectedBoard.turn },
+        boardAddress: { timeline: srcBoard.timelineId, turn: srcBoard.turn },
         action: {
           id: buildActionId() as any,
           type: 'time_branch' as any,
           player: playerId as any,
-          from: { timeline: selectedBoard.timelineId as any, turn: selectedBoard.turn as any, region: 'C' as any },
+          from: { timeline: srcBoard.timelineId as any, turn: srcBoard.turn as any, region: 'C' as any },
           to: { timeline: cell.timelineId as any, turn: cell.turn as any, region: 'C' as any },
           payload: {},
           submittedAt: Date.now(),
         },
       });
-      setActionMode('idle');
       return;
     }
-
     setSelectedBoard({ timelineId: cell.timelineId, turn: cell.turn });
-    setSelectedEntityId(null);
-    setActionMode('idle');
-  }
-
-  function handleMove(destRegion: string) {
-    if (!selectedBoard || !selectedEntityId || !selectedBoardData) return;
-
-    const entity = selectedBoardData.entities.find(([id]) => id === selectedEntityId);
-    if (!entity) return;
-    const loc = (entity[1] as any).location;
-
-    submitAction.mutate({
-      gameId,
-      boardAddress: { timeline: selectedBoard.timelineId, turn: selectedBoard.turn },
-      action: {
-        id: buildActionId() as any,
-        type: 'move' as any,
-        player: playerId as any,
-        from: { timeline: loc.timeline, turn: loc.turn, region: loc.region },
-        to: { timeline: loc.timeline, turn: loc.turn, region: destRegion as any },
-        entityId: selectedEntityId as any,
-        payload: {},
-        submittedAt: Date.now(),
-      },
-    });
-    setActionMode('idle');
-    setSelectedEntityId(null);
+    clearSelection();
   }
 
   function handlePass() {
-    if (!selectedBoard) return;
+    const board = { timelineId: activeTimeline, turn: activeTurn };
     submitAction.mutate({
       gameId,
-      boardAddress: { timeline: selectedBoard.timelineId, turn: selectedBoard.turn },
+      boardAddress: { timeline: board.timelineId, turn: board.turn },
       action: {
         id: buildActionId() as any,
         type: 'pass' as any,
         player: playerId as any,
-        from: { timeline: selectedBoard.timelineId as any, turn: selectedBoard.turn as any, region: 'C' as any },
-        to: { timeline: selectedBoard.timelineId as any, turn: selectedBoard.turn as any, region: 'C' as any },
+        from: { timeline: board.timelineId as any, turn: board.turn as any, region: 'C' as any },
+        to: { timeline: board.timelineId as any, turn: board.turn as any, region: 'C' as any },
         payload: {},
         submittedAt: Date.now(),
       },
     });
   }
 
-  const modeLabel: Record<ActionMode, string> = {
-    idle: '',
-    selecting_move_dest: 'Click a region to move to',
-    selecting_time_branch_dest: 'Click a past board to branch from',
-  };
+  const statusMsg = (() => {
+    if (timeBranchMode) return { text: 'Click any past board to branch into it', color: 'text-purple-300' };
+    if (selectedPiece) return { text: `${selectedPiece.id} selected — click a highlighted region to move, or click Time Branch`, color: 'text-blue-300' };
+    if (isMyTurn) return { text: 'Your turn — click one of your pieces to select it', color: 'text-green-400' };
+    return { text: `Waiting for ${data.currentPlayer}…`, color: 'text-gray-500' };
+  })();
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 text-white">
       {/* Header */}
-      <header className="flex items-center justify-between px-4 py-3 border-b border-gray-800 gap-4 flex-wrap">
-        <div className="flex items-center gap-4">
+      <header className="flex items-center justify-between px-4 py-2 border-b border-gray-800 gap-4 flex-wrap">
+        <div className="flex items-center gap-3">
           <button onClick={onLeave} className="text-gray-500 hover:text-white text-sm">← Lobby</button>
-          <span className="font-bold">5D Multiverse</span>
-          <span className="text-gray-500 font-mono text-xs">{gameId}</span>
+          <span className="font-bold tracking-tight">5D Multiverse</span>
+          <span className="text-gray-600 font-mono text-xs truncate max-w-32">{gameId}</span>
         </div>
         <div className="flex items-center gap-4 flex-wrap">
-          <PlayerSwitcher players={uniquePlayers} currentPlayerId={playerId} onSwitch={onPlayerSwitch} />
-          <span className="text-sm text-gray-400">Turn <span className="text-white font-mono">{data.globalTurn}</span></span>
-          <span className="text-sm text-gray-400">Active: <span className="text-yellow-400 font-mono">{data.currentPlayer}</span></span>
-          <span className="text-sm text-gray-500 font-mono">you: {playerId}</span>
+          <PlayerSwitcher players={allPlayers} currentPlayerId={playerId} onSwitch={onPlayerSwitch} />
+          <span className="text-sm text-gray-400">
+            Turn <span className="text-white font-mono">{data.globalTurn}</span>
+          </span>
+          <span className="text-sm text-gray-400">
+            Active: <span className="text-yellow-400 font-mono">{data.currentPlayer}</span>
+          </span>
+          <span className="text-sm text-gray-600 font-mono">you: {playerId}</span>
           {data.winner && <span className="text-green-400 font-semibold">🏆 {data.winner} wins!</span>}
         </div>
       </header>
 
-      <div className="flex flex-1 overflow-hidden">
-        {/* Board grid */}
-        <main className="flex-1 overflow-auto p-4">
-          {actionMode !== 'idle' && (
-            <div className="mb-3 px-3 py-2 bg-blue-950 border border-blue-700 rounded text-sm text-blue-300 flex items-center justify-between">
-              <span>{modeLabel[actionMode]}</span>
-              <button onClick={() => setActionMode('idle')} className="text-blue-500 hover:text-blue-300 text-xs ml-4">Cancel</button>
-            </div>
-          )}
-          <BoardGrid
-            cells={cells}
-            maxTurn={maxTurn}
-            timelines={timelines}
-            onCellClick={handleCellClick}
-            selectedCell={selectedBoard}
-          />
-        </main>
-
-        {/* Side panel */}
-        <aside className="w-72 border-l border-gray-800 flex flex-col overflow-hidden">
-          {selectedBoardData ? (
-            <>
-              <div className="flex-1 overflow-auto p-4">
-                <BoardDetail
-                  timelineId={selectedBoard!.timelineId}
-                  turn={selectedBoard!.turn}
-                  regions={selectedBoardData.regions}
-                  entities={selectedBoardData.entities}
-                  isPending={pendingKeys.has(`${selectedBoard!.timelineId}:${selectedBoard!.turn}`)}
-                  selectedEntityId={selectedEntityId}
-                  onSelectEntity={setSelectedEntityId}
-                />
-
-                {/* Move destination picker */}
-                {actionMode === 'selecting_move_dest' && selectedEntityId && (
-                  <div className="mt-4">
-                    <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Move to region</p>
-                    {['C', 'N', 'S', 'E', 'W'].map((r) => (
-                      <button
-                        key={r}
-                        onClick={() => handleMove(r)}
-                        className="mr-1 mb-1 text-xs bg-gray-700 hover:bg-blue-700 rounded px-2 py-1 font-mono"
-                      >
-                        {r}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Action buttons */}
-              {isMyTurn && !data.winner && (
-                <div className="border-t border-gray-800 p-4 flex flex-col gap-2">
-                  <button
-                    onClick={handlePass}
-                    disabled={submitAction.isPending}
-                    className="text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded px-3 py-2"
-                  >
-                    Pass
-                  </button>
-                  {selectedEntityId && (
-                    <button
-                      onClick={() => setActionMode('selecting_move_dest')}
-                      className="text-sm bg-blue-700 hover:bg-blue-600 rounded px-3 py-2"
-                    >
-                      Move piece
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setActionMode('selecting_time_branch_dest')}
-                    className="text-sm bg-purple-800 hover:bg-purple-700 rounded px-3 py-2"
-                  >
-                    Time Branch →
-                  </button>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center text-gray-600 text-sm italic p-4 text-center">
-              Click a board to inspect it
-            </div>
-          )}
-        </aside>
+      {/* Status bar */}
+      <div className={`px-4 py-1.5 text-sm border-b border-gray-800 flex items-center justify-between ${statusMsg.color}`}>
+        <span>{statusMsg.text}</span>
+        {(selectedPiece || timeBranchMode) && (
+          <button onClick={clearSelection} className="text-xs text-gray-500 hover:text-white">Cancel (Esc)</button>
+        )}
       </div>
 
-      {/* Footer */}
-      <footer className="border-t border-gray-800 px-4 py-3 flex items-center justify-between">
-        <div className="text-xs text-gray-600">
-          {submitAction.isError && <span className="text-red-400">{submitAction.error.message}</span>}
+      {/* Main board grid */}
+      <main className="flex-1 overflow-auto p-3">
+        <BoardGrid
+          cells={cells}
+          maxTurn={maxTurn}
+          timelines={timelines}
+          selectedCell={selectedBoard}
+          onCellClick={handleCellClick}
+          onPieceClick={handlePieceClick}
+          onRegionClick={handleRegionClick}
+        />
+      </main>
+
+      {/* Footer actions */}
+      <footer className="border-t border-gray-800 px-4 py-3 flex items-center justify-between gap-4">
+        <div className="text-xs text-red-400">
+          {submitAction.isError && submitAction.error.message}
         </div>
-        <div className="flex items-center gap-3">
-          {isMyTurn && !data.winner && (
+        {isMyTurn && !data.winner && (
+          <div className="flex items-center gap-2">
             <button
-              onClick={() => endTurn.mutate({ gameId })}
-              disabled={endTurn.isPending}
-              className="bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded px-4 py-2 text-sm font-medium"
+              onClick={handlePass}
+              disabled={submitAction.isPending}
+              className="text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-50 rounded px-3 py-1.5"
             >
-              {endTurn.isPending ? 'Ending…' : 'End Turn'}
+              Pass
             </button>
-          )}
-          {!isMyTurn && !data.winner && (
-            <span className="text-gray-500 text-sm italic">Waiting for {data.currentPlayer}…</span>
-          )}
-        </div>
+            <button
+              onClick={() => { setTimeBranchMode((v) => !v); setSelectedPiece(null); }}
+              className={`text-sm rounded px-3 py-1.5 transition-colors ${
+                timeBranchMode
+                  ? 'bg-purple-600 hover:bg-purple-500 ring-1 ring-purple-400'
+                  : 'bg-purple-900 hover:bg-purple-800'
+              }`}
+            >
+              {timeBranchMode ? 'Cancel Time Branch' : 'Time Branch →'}
+            </button>
+            <button
+              onClick={() => endTurnMut.mutate({ gameId })}
+              disabled={endTurnMut.isPending}
+              className="text-sm bg-green-700 hover:bg-green-600 disabled:opacity-50 rounded px-4 py-1.5 font-medium"
+            >
+              {endTurnMut.isPending ? 'Ending…' : 'End Turn'}
+            </button>
+          </div>
+        )}
       </footer>
     </div>
   );
