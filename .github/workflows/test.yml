@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev]
+
+jobs:
+  test:
+    name: Engine tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build types
+        run: pnpm --filter @5d/types build
+
+      - name: Typecheck engine
+        run: pnpm --filter @5d/engine typecheck
+
+      - name: Run engine tests
+        run: pnpm --filter @5d/engine test
+
+      - name: Typecheck stub
+        run: pnpm --filter @5d/stub typecheck
+
+      - name: Typecheck server
+        run: pnpm --filter @5d/server typecheck
+
+      - name: Typecheck client
+        run: pnpm --filter @5d/client typecheck
