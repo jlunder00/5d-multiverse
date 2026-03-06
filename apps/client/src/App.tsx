@@ -2,18 +2,28 @@ import { useState } from 'react';
 import { Lobby } from './components/Lobby';
 import { GameView } from './components/GameView';
 
-const PLAYER_ID = window.location.hash.slice(1) || 'player-1';
+interface AppProps {
+  playerId: string;
+  onPlayerSwitch: (id: string) => void;
+}
 
-export function App() {
+export function App({ playerId, onPlayerSwitch }: AppProps) {
   const [gameId, setGameId] = useState<string | null>(null);
 
   if (gameId) {
-    return <GameView gameId={gameId} playerId={PLAYER_ID} />;
+    return (
+      <GameView
+        gameId={gameId}
+        playerId={playerId}
+        onPlayerSwitch={onPlayerSwitch}
+        onLeave={() => setGameId(null)}
+      />
+    );
   }
 
   return (
     <Lobby
-      playerId={PLAYER_ID}
+      playerId={playerId}
       onGameCreated={(id) => setGameId(id)}
       onJoinGame={(id) => setGameId(id)}
     />

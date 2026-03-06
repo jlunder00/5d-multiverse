@@ -4,6 +4,11 @@ import { fastifyTRPCPlugin, type FastifyTRPCPluginOptions } from '@trpc/server/a
 import { db } from './db/index.js';
 import { createContext } from './trpc/context.js';
 import { appRouter, type AppRouter } from './trpc/router.js';
+import { registerPlugin } from '@5d/engine';
+import { stubPlugin } from '@5d/stub';
+
+// Register game plugins
+registerPlugin(stubPlugin);
 
 const server = Fastify({ logger: true });
 

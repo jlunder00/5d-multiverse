@@ -2,14 +2,17 @@ import { ExecutionOrder, PlayerId, Turn } from '@5d/types';
 
 /**
  * Creates the initial execution order for a game.
- * The priority queue is the player list in their starting order.
+ * globalTurn increments on every player's endTurn.
+ * At turn T, the player at index (T-1) % n takes their turn.
  */
 export function createExecutionOrder(players: PlayerId[], globalTurn: Turn): ExecutionOrder {
   if (players.length === 0) throw new Error('At least one player required');
+  const n = players.length;
+  const currentIndex = ((globalTurn - 1) % n + n) % n;
   return {
     globalTurn,
     priorityQueue: [...players],
-    currentIndex: 0,
+    currentIndex,
   };
 }
 
@@ -21,30 +24,24 @@ export function getCurrentPlayer(order: ExecutionOrder): PlayerId {
 }
 
 /**
- * Advances to the next player within the current global turn.
- * Returns null if all players have acted (global turn is complete).
- */
-export function advancePlayer(order: ExecutionOrder): ExecutionOrder | null {
-  const nextIndex = order.currentIndex + 1;
-  if (nextIndex >= order.priorityQueue.length) return null;
-  return { ...order, currentIndex: nextIndex };
-}
-
-/**
- * Advances to the next global turn with rotating priority.
- * The player who was first this turn moves to the end of the queue.
+ * Advances to the next player and increments globalTurn.
+ * Called once per endTurn — each player's turn is one global turn.
  */
 export function advanceGlobalTurn(order: ExecutionOrder): ExecutionOrder {
-  const [first, ...rest] = order.priorityQueue;
-  if (first === undefined) throw new Error('Empty priority queue');
+  const n = order.priorityQueue.length;
   return {
     globalTurn: (order.globalTurn + 1) as Turn,
-    priorityQueue: [...rest, first],
-    currentIndex: 0,
+    priorityQueue: order.priorityQueue,
+    currentIndex: (order.currentIndex + 1) % n,
   };
 }
 
-/** Returns true when every player has acted this global turn. */
-export function isGlobalTurnComplete(order: ExecutionOrder): boolean {
-  return order.currentIndex >= order.priorityQueue.length;
+/** @deprecated Not used in current model. */
+export function advancePlayer(order: ExecutionOrder): ExecutionOrder | null {
+  return null;
+}
+
+/** @deprecated Not used in current model. */
+export function isGlobalTurnComplete(_order: ExecutionOrder): boolean {
+  return false;
 }
