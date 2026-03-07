@@ -69,6 +69,7 @@ export function processAction(
   address: BoardAddress,
   isHalfAction: boolean,
   halfActionBranchId: BranchId | undefined,
+  nextTimelineId?: () => string,
 ): GameLoopState {
   const player = getCurrentPlayer(state.order);
 
@@ -177,7 +178,7 @@ export function processAction(
       }
     } else {
       // New branch — pre-assign the timeline ID (= branchId)
-      const newTimelineId = `TL-branch-${action.id}` as TimelineId;
+      const newTimelineId = (nextTimelineId ? nextTimelineId() : `TL-branch-${action.id}`) as TimelineId;
       const branchId = newTimelineId as unknown as BranchId;
 
       // The first board of the new timeline is at originAddress.turn — the timestep

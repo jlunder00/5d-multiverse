@@ -187,6 +187,11 @@ export const appRouter = router({
           pluginData: board.pluginData,
           inStabilizationPeriod: state.branchTree.nodes[board.address.timeline as string]?.inStabilizationPeriod ?? false,
         })),
+        branchInfo: Object.values(state.branchTree.nodes).map((node) => ({
+          timelineId: node.timelineId as string,
+          parentTimelineId: node.parentTimelineId as string | null,
+          divergedAtTurn: node.divergedAtTurn as number | null,
+        })),
         currentPlayer: activePlayer,
         globalTurn: state.order.globalTurn,
         winner: state.winner,
@@ -222,6 +227,9 @@ export const appRouter = router({
 
       const address = input.boardAddress as { timeline: ReturnType<typeof Object.keys>[number]; turn: number } as Parameters<typeof processAction>[4];
 
+      // Counter for short timeline IDs: TL1, TL2, … (TL0 is the root, already named by plugin).
+      let nextTlCounter = Object.keys(state.branchTree.nodes).length;
+
       try {
         state = processAction(
           state,
@@ -231,6 +239,7 @@ export const appRouter = router({
           address,
           false,
           undefined,
+          () => `TL${nextTlCounter++}`,
         );
       } catch (err) {
         throw new TRPCError({
