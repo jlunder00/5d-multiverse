@@ -2,8 +2,6 @@ import {
   WorldState,
   Board,
   BoardAddress,
-  BranchId,
-  PendingBranch,
   ActionResult,
   Entity,
   EntityId,
@@ -19,11 +17,6 @@ export function getBoardAt(world: WorldState, address: BoardAddress): Board | un
   return world.boards.get(boardKey(address));
 }
 
-/** Returns the pending board state for a branch (the branch's origin board, with pending modifications). */
-export function getPendingBranch(world: WorldState, branchId: BranchId): PendingBranch | undefined {
-  return world.pendingBranches.get(branchId);
-}
-
 /** Inserts or replaces a board in the world state (immutable). */
 export function setBoard(world: WorldState, board: Board): WorldState {
   const boards = new Map(world.boards);
@@ -31,33 +24,8 @@ export function setBoard(world: WorldState, board: Board): WorldState {
   return { ...world, boards };
 }
 
-/** Adds a pending branch to the world state (immutable). */
-export function addPendingBranch(world: WorldState, branch: PendingBranch): WorldState {
-  const pendingBranches = new Map(world.pendingBranches);
-  pendingBranches.set(branch.id, branch);
-  return { ...world, pendingBranches };
-}
-
-/** Updates a pending branch in the world state (immutable). */
-export function updatePendingBranch(world: WorldState, branch: PendingBranch): WorldState {
-  const pendingBranches = new Map(world.pendingBranches);
-  pendingBranches.set(branch.id, branch);
-  return { ...world, pendingBranches };
-}
-
-/** Removes a pending branch from the world state (immutable). */
-export function removePendingBranch(world: WorldState, branchId: BranchId): WorldState {
-  const pendingBranches = new Map(world.pendingBranches);
-  pendingBranches.delete(branchId);
-  return { ...world, pendingBranches };
-}
-
 /**
  * Applies the effects from an ActionResult to the given board.
- *
- * Effects are opaque plugin-defined records. The engine understands a small
- * set of well-known effect keys and applies them directly; everything else is
- * stored in pluginData for the plugin to read back.
  *
  * Well-known effect keys:
  *   entity_upsert  — { entity: Entity }  — add/update an entity on the board
@@ -97,7 +65,6 @@ export function applyActionResult(board: Board, result: ActionResult): Board {
       const key = effect['key'] as string;
       pluginData = { ...pluginData, [key]: effect['value'] };
     }
-    // Unknown effect types are silently ignored — plugin reads them from pluginData
   }
 
   return { ...board, entities, regions, economies, pluginData };
