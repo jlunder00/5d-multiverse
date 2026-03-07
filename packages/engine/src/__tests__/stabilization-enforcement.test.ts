@@ -149,6 +149,26 @@ describe('processAction — stabilization enforcement', () => {
         { timeline: TL('TL0'), turn: T(2) }, false, undefined)
     ).not.toThrow();
   });
+
+  it('inserts the entity into the stabilizing board on direct arrival from parent', () => {
+    // Verifies the entity actually lands — not just that the action doesn't throw.
+    const state = stateWithStabilizingBranch();
+    const stabilizingNode = getStabilizingNode(state);
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 2, region: 'S' },
+      { timeline: stabilizingNode.timelineId as string, turn: 1, region: 'E' },
+      'piece-P2',
+    );
+    const state2 = { ...state, order: { ...state.order, currentIndex: 1 } };
+    const result = processAction(state2, testPlugin, testTools, action,
+      { timeline: TL('TL0'), turn: T(2) }, false, undefined);
+
+    const destBoard = getBoardAt(result.world, { timeline: stabilizingNode.timelineId, turn: T(1) });
+    const arrived = [...(destBoard?.entities.values() ?? [])].find(
+      (e) => e.owner === 'P2' && (e.location.region as string) === 'E',
+    );
+    expect(arrived).toBeDefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -217,7 +237,64 @@ describe('processAction — formation-window reachability', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 3. Crystallization clears inStabilizationPeriod
+// 3. TL0 formation-window reachability
+// ---------------------------------------------------------------------------
+
+describe('processAction — TL0 formation-window reachability', () => {
+  /** TL0 at T=4, crystallized but with stabilizationPeriodTurns=2 (turns 1-2 are formation window). */
+  function stateWithTL0StabilizationHistory() {
+    const e2 = makeEntity('piece-P2', 'P2', 'TL0', 4, 'S');
+    const world = makeWorld([
+      makeBoard('TL0', 1),
+      makeBoard('TL0', 2),
+      makeBoard('TL0', 3),
+      makeBoard('TL0', 4, { entities: [e2] }),
+    ]);
+    const base = makeState(world, ['P1', 'P2'], 4);
+    // Override TL0 node: crystallized, but formation-window turns 1–2 recorded
+    const tl0Id = base.branchTree.rootTimelineId as string;
+    const tl0Node = {
+      ...base.branchTree.nodes[tl0Id]!,
+      stabilizationPeriodTurns: 2,
+      inStabilizationPeriod: false,
+    };
+    return {
+      ...base,
+      branchTree: { ...base.branchTree, nodes: { ...base.branchTree.nodes, [tl0Id]: tl0Node } },
+    };
+  }
+
+  it('blocks time travel to TL0 formation-window turn when tl0StabilizationReachable = false', () => {
+    const restrictedPlugin: IGameDefinition = { ...testPlugin, tl0StabilizationReachable: false };
+    const state = stateWithTL0StabilizationHistory();
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 4, region: 'S' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P2',
+    );
+    expect(() =>
+      processAction(state, restrictedPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(4) }, false, undefined)
+    ).toThrow(/formation.window/i);
+  });
+
+  it('allows time travel to TL0 formation-window turn when tl0StabilizationReachable = true', () => {
+    // testPlugin has tl0StabilizationReachable = true
+    const state = stateWithTL0StabilizationHistory();
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 4, region: 'S' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P2',
+    );
+    expect(() =>
+      processAction(state, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(4) }, false, undefined)
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Crystallization clears inStabilizationPeriod
 // ---------------------------------------------------------------------------
 
 describe('crystallizeDueWindows — timing', () => {
@@ -250,5 +327,22 @@ describe('crystallizeDueWindows — timing', () => {
     expect(node).toBeDefined();
     expect(node.inStabilizationPeriod).toBe(true);
     expect(result.windows.size).toBe(1);
+  });
+
+  it('does not add or remove boards when crystallizing', () => {
+    // Ensures the old catch-up loop is gone: crystallization is metadata-only.
+    const state = stateWithStabilizingBranch();
+    const node = getStabilizingNode(state);
+    const boardCountBefore = state.world.boards.size;
+
+    const stateAtT4 = { ...state, order: { ...state.order, globalTurn: T(4) } };
+    const crystallized = crystallizeDueWindows(
+      stateAtT4, testPlugin, testTools, (s) => s, () => 'unused',
+    );
+
+    expect(crystallized.world.boards.size).toBe(boardCountBefore);
+    // Stabilizing board must still be present at its original turn
+    const stabilizingBoard = getBoardAt(crystallized.world, { timeline: node.timelineId, turn: T(1) });
+    expect(stabilizingBoard).toBeDefined();
   });
 });
