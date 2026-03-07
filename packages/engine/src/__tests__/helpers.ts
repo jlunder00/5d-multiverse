@@ -217,8 +217,8 @@ export function makeBoard(
     (opts.entities ?? []).map((e) => [e.id, e]),
   );
   const pluginData: Record<string, unknown> = {};
-  if (opts.isPending) pluginData['isPendingBranch'] = true;
-  if (opts.originAddress) pluginData['originAddress'] = opts.originAddress;
+
+
 
   return { address: { timeline: tl, turn: tr }, regions, entities, economies: new Map(), pluginData };
 }
@@ -243,7 +243,7 @@ export function makeEntity(
 /** Build a WorldState from an array of boards. */
 export function makeWorld(boards: Board[]): WorldState {
   const map = new Map<string, Board>(boards.map((b) => [boardKey(b.address), b]));
-  return { boards: map, pendingBranches: new Map() };
+  return { boards: map };
 }
 
 /** Build a minimal GameLoopState. */
