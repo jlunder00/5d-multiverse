@@ -16,16 +16,12 @@ export interface BoardCell {
   timelineId: string;
   turn: number;
   exists: boolean;
-  isPending: boolean;
+  inStabilizationPeriod: boolean;
   isActive: boolean;
   pieces: PieceInfo[];
   regions: RegionInfo[];
   /** Highlight this board as a valid time-travel destination */
   isTimeTravelTarget?: boolean;
-  /** This board is a ghost/pending board (not yet crystallized) */
-  isGhost?: boolean;
-  /** If ghost, the origin address it was branched from */
-  ghostOriginAddress?: { timeline: string; turn: number };
   /** Regions on this board that are legal move destinations */
   legalMoveRegions?: string[];
   /** Region of the currently selected piece (on this board) */
@@ -177,8 +173,7 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
   let borderColor = 'border-gray-700';
   let bg = 'bg-gray-900';
   if (cell.isTimeTravelTarget) { borderColor = 'border-purple-500'; bg = 'bg-purple-950'; }
-  else if (cell.isGhost) { borderColor = 'border-yellow-500'; bg = 'bg-yellow-950'; }
-  else if (cell.isPending) { borderColor = 'border-yellow-600'; bg = 'bg-yellow-950'; }
+  else if (cell.inStabilizationPeriod) { borderColor = 'border-yellow-500'; bg = 'bg-yellow-950'; }
   else if (cell.isActive) { borderColor = 'border-blue-500'; bg = 'bg-blue-950'; }
   if (isSelected) borderColor = 'border-white';
 
@@ -199,8 +194,7 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
           {cell.timelineId}:T{cell.turn}
         </span>
         <span className="flex gap-0.5">
-          {cell.isGhost && <span className="text-yellow-400 text-[10px]">◈</span>}
-          {cell.isPending && !cell.isGhost && <span className="text-yellow-600 text-[10px]">◈</span>}
+          {cell.inStabilizationPeriod && <span className="text-yellow-400 text-[10px]" title="In stabilization period">◈</span>}
           {cell.isTimeTravelTarget && <span className="text-purple-400 text-[10px]">⟲</span>}
         </span>
       </div>
