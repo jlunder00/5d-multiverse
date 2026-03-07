@@ -80,7 +80,23 @@ export function processAction(
     destNodeForChecks?.inStabilizationPeriod === true &&
     destNodeForChecks.parentTimelineId === (address.timeline as string);
 
-  if (!isDirectArrivalFromParent) {
+  // Cross-board checks only apply when action.to refers to a different board than the
+  // submitted-on board. Intra-board actions (e.g. spatial moves) must not be subject
+  // to time-travel or reachability checks.
+  const isCrossBoard =
+    (action.to.timeline as string) !== (address.timeline as string) ||
+    (action.to.turn as number) !== (address.turn as number);
+
+  if (!isDirectArrivalFromParent && isCrossBoard) {
+    // Temporal+lateral: crossing both timeline and turn in one action is disallowed.
+    const isCrossTimeline = (action.to.timeline as string) !== (address.timeline as string);
+    const isCrossTurn = (action.to.turn as number) !== (address.turn as number);
+    if (isCrossTimeline && isCrossTurn) {
+      throw new Error(
+        `Cannot submit action: temporal+lateral moves (crossing both timeline and turn boundary) are not allowed`,
+      );
+    }
+
     if (isInStabilizationPeriod(state.branchTree, action.to.timeline as TimelineId)) {
       throw new Error(
         `Cannot submit action: destination timeline ${action.to.timeline as string} is currently in its stabilization period`,
