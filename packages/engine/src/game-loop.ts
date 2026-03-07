@@ -72,20 +72,28 @@ export function processAction(
 ): GameLoopState {
   const player = getCurrentPlayer(state.order);
 
-  // Engine invariant: cannot directly target a timeline in its stabilization period.
-  // Subsequent arrivals target the parent timeline's origin address, not the branch.
-  if (isInStabilizationPeriod(state.branchTree, action.to.timeline as TimelineId)) {
-    throw new Error(
-      `Cannot submit action: destination timeline ${action.to.timeline as string} is currently in its stabilization period`,
-    );
-  }
+  // Engine invariant: cannot target a stabilizing timeline unless it is a direct
+  // subsequent arrival from that timeline's parent (direct addressing model).
+  // Direct arrivals from the parent also bypass formation-window checks.
+  const destNodeForChecks = state.branchTree.nodes[action.to.timeline as string];
+  const isDirectArrivalFromParent =
+    destNodeForChecks?.inStabilizationPeriod === true &&
+    destNodeForChecks.parentTimelineId === (address.timeline as string);
 
-  // Formation-window reachability: turns within a crystallized timeline's stabilization
-  // period may be permanently unreachable depending on plugin settings.
-  if (!isFormationWindowReachable(state.branchTree, action.to.timeline as TimelineId, action.to.turn as Turn, plugin)) {
-    throw new Error(
-      `Cannot submit action: turn ${action.to.turn as number} on timeline ${action.to.timeline as string} is a formation-window turn and is not reachable after crystallization`,
-    );
+  if (!isDirectArrivalFromParent) {
+    if (isInStabilizationPeriod(state.branchTree, action.to.timeline as TimelineId)) {
+      throw new Error(
+        `Cannot submit action: destination timeline ${action.to.timeline as string} is currently in its stabilization period`,
+      );
+    }
+
+    // Formation-window reachability: turns within a crystallized timeline's stabilization
+    // period may be permanently unreachable depending on plugin settings.
+    if (!isFormationWindowReachable(state.branchTree, action.to.timeline as TimelineId, action.to.turn as Turn, plugin)) {
+      throw new Error(
+        `Cannot submit action: turn ${action.to.turn as number} on timeline ${action.to.timeline as string} is a formation-window turn and is not reachable after crystallization`,
+      );
+    }
   }
 
   const context = buildContext(
@@ -109,18 +117,35 @@ export function processAction(
   let branchTree = state.branchTree;
   let windows = state.windows;
 
-  if (result.success && plugin.branchTrigger.shouldBranch(action, result, context)) {
+  // If the destination is already a stabilizing timeline (direct addressing), insert
+  // the entity there without triggering a new branch.
+  const directStabilizingNode = branchTree.nodes[action.to.timeline as string];
+  if (result.success && directStabilizingNode?.inStabilizationPeriod) {
+    if (movingEntity) {
+      const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
+      if (destBoard) {
+        const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
+        const entities = new Map(destBoard.entities);
+        entities.set(arrivedId, {
+          ...movingEntity,
+          id: arrivedId,
+          location: { ...action.to },
+        });
+        world = setBoard(world, addParty({ ...destBoard, entities }, player));
+      }
+    }
+  } else if (result.success && plugin.branchTrigger.shouldBranch(action, result, context)) {
     const originAddress = plugin.branchTrigger.getBranchOrigin(action, result, context);
 
     // Check for an in-window timeline whose origin matches this action's destination
     const existingBranchNode = findBranchByOrigin(branchTree, originAddress);
 
     if (existingBranchNode) {
-      // Subsequent arrival: bootstrap-paradox duplicate — historical copy stays,
-      // arriving piece inserted under a new entity ID so both coexist.
+      // Subsequent arrival via origin address: bootstrap-paradox duplicate — historical
+      // copy stays, arriving piece inserted under a new entity ID so both coexist.
       if (movingEntity) {
-        // The stabilization-period board starts at originAddress.turn + 1
-        const stabilizationStartTurn = ((originAddress.turn as number) + 1) as Turn;
+        // Board is at originAddress.turn (the timestep the piece came from)
+        const stabilizationStartTurn = originAddress.turn as Turn;
         const destAddress = { timeline: existingBranchNode.timelineId, turn: stabilizationStartTurn };
         const destBoard = getBoardAt(world, destAddress);
         if (destBoard) {
@@ -139,10 +164,9 @@ export function processAction(
       const newTimelineId = `TL-branch-${action.id}` as TimelineId;
       const branchId = newTimelineId as unknown as BranchId;
 
-      // The stabilization period board starts at originAddress.turn + 1:
-      // the branch happened at originAddress.turn, so the first actively-played
-      // turn in the new timeline is turn + 1.
-      const stabilizationStartTurn = ((originAddress.turn as number) + 1) as Turn;
+      // The first board of the new timeline is at originAddress.turn — the timestep
+      // the piece came from. The timeline then advances naturally via advanceAllTimelines.
+      const stabilizationStartTurn = originAddress.turn as Turn;
       const nPlayers = state.order.priorityQueue.length;
 
       const newNode: BranchNode = {
