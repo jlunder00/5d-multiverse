@@ -28,18 +28,45 @@ export interface BoardCell {
   selectedPieceRegion?: string;
 }
 
+export interface BranchInfo {
+  timelineId: string;
+  parentTimelineId: string | null;
+  divergedAtTurn: number | null;
+}
+
 export interface BoardGridProps {
   cells: BoardCell[];
   maxTurn: number;
   timelines: string[];
+  branchInfo?: BranchInfo[];
   selectedCell?: { timelineId: string; turn: number } | null;
   onCellClick?: (cell: BoardCell) => void;
   onPieceClick?: (pieceId: string, cell: BoardCell) => void;
   onRegionClick?: (regionId: string, cell: BoardCell) => void;
 }
 
-const ROW_HEIGHT = 116; // px — 7rem grid rows + 1px gap
-const COL_WIDTH = 116;  // px — minmax(7rem, 1fr) approximation
+// Grid geometry constants (must match CSS below).
+// Cell size: 7rem = 112px. Row gap: 12px (gap-y-3). Col gap: 4px (gap-x-1). Padding: 8px (p-2).
+// Header row: 1.5rem = 24px. Label col: 4rem = 64px.
+const CELL_W = 112;
+const CELL_H = 112;
+const GAP_X = 4;
+const GAP_Y = 12;
+const PAD = 8;
+const HEADER_H = 24;
+const LABEL_W = 64;
+const COL_STRIDE = CELL_W + GAP_X; // 116
+const ROW_STRIDE = CELL_H + GAP_Y; // 124
+
+/** Pixel centre of cell at (rowIndex, turnIndex), both 0-based. */
+function cellCenter(row: number, col: number) {
+  return {
+    x: PAD + LABEL_W + GAP_X + col * COL_STRIDE + CELL_W / 2,
+    y: PAD + HEADER_H + GAP_Y + row * ROW_STRIDE + CELL_H / 2,
+  };
+}
+
+const COL_WIDTH = COL_STRIDE; // kept for scroll helper
 
 // Stable player→color mapping by hashing the player ID
 const PALETTE = ['#3b82f6', '#ef4444', '#22c55e', '#eab308', '#a855f7', '#f97316', '#06b6d4'];
@@ -53,6 +80,7 @@ export function BoardGrid({
   cells,
   maxTurn,
   timelines,
+  branchInfo = [],
   selectedCell,
   onCellClick,
   onPieceClick,
@@ -90,6 +118,13 @@ export function BoardGrid({
     panStart.current = null;
   }
 
+  // Pre-compute row index map for SVG line drawing
+  const rowOf = new Map(timelines.map((tl, i) => [tl, i]));
+
+  // SVG dimensions (approximate — cells may be wider than 7rem on large screens)
+  const svgW = PAD + LABEL_W + GAP_X + maxTurn * COL_STRIDE + PAD;
+  const svgH = PAD + HEADER_H + GAP_Y + timelines.length * ROW_STRIDE + PAD;
+
   return (
     <div
       ref={scrollRef}
@@ -100,8 +135,52 @@ export function BoardGrid({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
+      {/* Wrapper gives the SVG overlay a relative anchor */}
+      <div className="relative" style={{ minWidth: svgW, minHeight: svgH }}>
+
+      {/* SVG branch-connector overlay — sits above grid, no pointer events */}
+      <svg
+        width={svgW}
+        height={svgH}
+        className="absolute inset-0 pointer-events-none"
+        style={{ zIndex: 5 }}
+      >
+        <defs>
+          <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#6b7280" />
+          </marker>
+        </defs>
+        {branchInfo
+          .filter((b) => b.parentTimelineId !== null && b.divergedAtTurn !== null)
+          .map((b) => {
+            const parentRow = rowOf.get(b.parentTimelineId!);
+            const childRow = rowOf.get(b.timelineId);
+            if (parentRow === undefined || childRow === undefined) return null;
+            const col = (b.divergedAtTurn! - 1); // 0-based column index
+            const src = cellCenter(parentRow, col);
+            const dst = cellCenter(childRow, col);
+            // Line from bottom of parent cell to top of child cell
+            const x = src.x;
+            const y1 = src.y + CELL_H / 2 + 2;
+            const y2 = dst.y - CELL_H / 2 - 2;
+            return (
+              <g key={b.timelineId}>
+                <line
+                  x1={x} y1={y1} x2={x} y2={y2}
+                  stroke="#6b7280"
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  markerEnd="url(#arrow)"
+                />
+                {/* Dot at origin */}
+                <circle cx={x} cy={y1} r={3} fill="#6b7280" />
+              </g>
+            );
+          })}
+      </svg>
+
       <div
-        className="grid gap-1 p-2"
+        className="grid gap-x-1 gap-y-3 p-2"
         style={{
           gridTemplateColumns: `4rem repeat(${maxTurn}, minmax(7rem, 1fr))`,
           gridTemplateRows: `1.5rem repeat(${timelines.length}, 7rem)`,
@@ -128,7 +207,7 @@ export function BoardGrid({
             {/* Timeline label (sticky left) */}
             <div
               className="sticky left-0 z-10 flex items-center justify-end pr-2 text-xs text-gray-500 font-mono bg-gray-950 cursor-pointer hover:text-gray-300"
-              onClick={() => scrollRef.current?.scrollTo({ top: rowIndex * ROW_HEIGHT, behavior: 'smooth' })}
+              onClick={() => scrollRef.current?.scrollTo({ top: rowIndex * ROW_STRIDE, behavior: 'smooth' })}
             >
               {timelineId}
             </div>
@@ -156,6 +235,7 @@ export function BoardGrid({
           </React.Fragment>
         ))}
       </div>
+      </div> {/* end relative wrapper */}
     </div>
   );
 }

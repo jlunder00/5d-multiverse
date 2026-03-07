@@ -99,7 +99,31 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     return atCurrentTurn.includes('TL0') ? 'TL0' : (atCurrentTurn[0] ?? 'TL0');
   })();
 
-  const timelines = [...new Set(data.boards.map((b) => b.address.timeline as string))].sort();
+  // DFS order: newest child immediately below its parent, older siblings pushed further down.
+  // Guarantees connecting lines from parent to newest child never cross sibling branch lines.
+  const timelines = (() => {
+    const info = data.branchInfo ?? [];
+    const childrenOf = new Map<string, string[]>();
+    let root: string | undefined;
+    for (const b of info) {
+      if (!b.parentTimelineId) { root = b.timelineId; }
+      else {
+        const list = childrenOf.get(b.parentTimelineId) ?? [];
+        list.push(b.timelineId);
+        childrenOf.set(b.parentTimelineId, list);
+      }
+    }
+    if (!root) return [...new Set(data.boards.map((b) => b.address.timeline as string))].sort();
+    const result: string[] = [];
+    function dfs(id: string) {
+      result.push(id);
+      const children = childrenOf.get(id) ?? [];
+      // Newest child first (server appends in creation order, so reverse = newest first)
+      for (let i = children.length - 1; i >= 0; i--) dfs(children[i]!);
+    }
+    dfs(root);
+    return result;
+  })();
   const maxTurn = Math.max(activeTurn, ...data.boards.map((b) => b.address.turn as number));
 
   // Read piece's current region fresh from server data to avoid stale closure
@@ -315,6 +339,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
               cells={cells}
               maxTurn={maxTurn}
               timelines={timelines}
+              branchInfo={data.branchInfo ?? []}
               selectedCell={selectedBoard}
               onCellClick={handleCellClick}
               onPieceClick={handlePieceClick}
