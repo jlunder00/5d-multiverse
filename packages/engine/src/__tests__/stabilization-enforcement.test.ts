@@ -78,43 +78,50 @@ function stateWithCrystallizedBranch() {
 // ---------------------------------------------------------------------------
 
 describe('processAction — stabilization enforcement', () => {
-  it('rejects an action targeting a stabilizing timeline when the sender is not the parent', () => {
-    // Build a state with TLX (child of TL0, in stabilization) and TLY (child of TLX).
-    // P2 on TL0 tries to target TLY directly. TL0 is not TLY's parent → reject.
+  it('rejects a same-turn lateral to a stabilizing timeline when the sender is not the parent', () => {
+    // TLX (child of TL0) is in stabilization. TL1 is an unrelated timeline.
+    // A lateral move TL1:T2 → TLX:T2 (same turn, different timeline) from a non-parent
+    // must be rejected — only TL0 (TLX's parent) can send pieces to TLX during stabilization.
     const base = stateWithStabilizingBranch();
-    const stabilizingTlId = getStabilizingNode(base).timelineId as string;
+    const stabilizingNode = getStabilizingNode(base);
 
-    // Add TLY board (child of TLX) to world and branchTree
-    const tlyBoard = makeBoard('TLY', 1);
-    const tlyNode = {
-      timelineId: TL('TLY'),
-      parentTimelineId: TL(stabilizingTlId),
-      divergedAtTurn: T(1),
+    // Add TL1 as a sibling timeline with a piece for P2 at T2, and add TLX:T2 board
+    const e2 = makeEntity('piece-P2', 'P2', 'TL1', 2, 'S');
+    const tl1Board = makeBoard('TL1', 2, { entities: [e2] });
+    const tlxBoard2 = makeBoard(stabilizingNode.timelineId as string, 2);
+    const tl1Node = {
+      timelineId: TL('TL1'),
+      parentTimelineId: TL('TL0'),
+      divergedAtTurn: T(0),
       divergedByActionId: 'act-seed' as any,
       children: [],
-      stabilizationPeriodTurns: 2,
-      crystallizesAtGlobalTurn: T(4),
-      inStabilizationPeriod: true,
-      originAddress: { timeline: TL(stabilizingTlId), turn: T(1) },
-      initiatedBy: P('P1'),
-      originColumnPlayer: P('P1'),
-      triggerActionId: 'act-seed' as any,
+      stabilizationPeriodTurns: 0,
+      crystallizesAtGlobalTurn: T(0),
+      inStabilizationPeriod: false,
+      originAddress: null,
+      initiatedBy: null,
+      originColumnPlayer: null,
+      triggerActionId: null,
     };
-    const world2 = { boards: new Map([...base.world.boards, ['TLY:1', tlyBoard]]) };
-    const bt2 = createBranch(base.branchTree, tlyNode);
-    const state = { ...base, world: world2, branchTree: bt2 };
+    const world2 = {
+      boards: new Map([
+        ...base.world.boards,
+        ['TL1:2', tl1Board],
+        [`${stabilizingNode.timelineId as string}:2`, tlxBoard2],
+      ]),
+    };
+    const bt2 = createBranch(base.branchTree, tl1Node);
+    const state = { ...base, world: world2, branchTree: bt2, order: { ...base.order, currentIndex: 1 } };
 
-    // P2 on TL0:T2 targets TLY:T1. TL0 ≠ TLY's parent (TLX) → should throw stabilization error
+    // Lateral move: TL1:T2 → TLX:T2 (same turn, different timeline, TL1 is not TLX's parent)
     const action = makeAction('move_to_past', 'P2',
-      { timeline: 'TL0', turn: 2, region: 'S' },
-      { timeline: 'TLY', turn: 1, region: 'E' },
+      { timeline: 'TL1', turn: 2, region: 'S' },
+      { timeline: stabilizingNode.timelineId as string, turn: 2, region: 'E' },
       'piece-P2',
     );
-    const state2 = { ...state, order: { ...state.order, currentIndex: 1 } };
-
     expect(() =>
-      processAction(state2, testPlugin, testTools, action,
-        { timeline: TL('TL0'), turn: T(2) }, false, undefined)
+      processAction(state, testPlugin, testTools, action,
+        { timeline: TL('TL1'), turn: T(2) }, false, undefined)
     ).toThrow(/stabiliz/i);
   });
 
@@ -176,35 +183,49 @@ describe('processAction — stabilization enforcement', () => {
 // ---------------------------------------------------------------------------
 
 describe('processAction — formation-window reachability', () => {
-  it('rejects time travel to a formation-window turn on a crystallized branch when branchStabilizationReachable = false', () => {
+  /** Add P1 on TLX:T4 so we can do a same-timeline temporal move to a formation-window turn. */
+  function stateWithPieceOnTLX() {
     const state = stateWithCrystallizedBranch();
-    // TLX formation-window turns: T=2 and T=3 (divergedAtTurn=1, stabilizationPeriodTurns=2)
-    // testPlugin has branchStabilizationReachable = false
-    const action = makeAction('move_to_past', 'P2',
-      { timeline: 'TL0', turn: 4, region: 'S' },
+    const e1 = makeEntity('piece-P1', 'P1', 'TLX', 4, 'N');
+    const board = getBoardAt(state.world, { timeline: TL('TLX'), turn: T(4) })!;
+    const updatedWorld = {
+      ...state.world,
+      boards: new Map(state.world.boards).set('TLX:4', { ...board, entities: new Map([[EID('piece-P1'), e1]]) }),
+    };
+    return { ...state, world: updatedWorld };
+  }
+
+  it('rejects time travel to a formation-window turn on a crystallized branch when branchStabilizationReachable = false', () => {
+    // P1 on TLX:T4 travels to TLX:T2 — same timeline, pure temporal.
+    // TLX formation-window turns: T2 and T3 (divergedAtTurn=1, stabilizationPeriodTurns=2).
+    // testPlugin has branchStabilizationReachable = false → reject.
+    const state = stateWithPieceOnTLX();
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TLX', turn: 4, region: 'N' },
       { timeline: 'TLX', turn: 2, region: 'C' },
-      'piece-P2',
+      'piece-P1',
     );
     expect(() =>
       processAction(state, testPlugin, testTools, action,
-        { timeline: TL('TL0'), turn: T(4) }, false, undefined)
-    ).toThrow(/formation.window|unreachable/i);
+        { timeline: TL('TLX'), turn: T(4) }, false, undefined)
+    ).toThrow(/formation.window/i);
   });
 
   it('allows time travel to a formation-window turn when branchStabilizationReachable = true', () => {
+    // Same path as above, but plugin allows formation-window turns.
     const reachablePlugin: IGameDefinition = {
       ...testPlugin,
       branchStabilizationReachable: true,
     };
-    const state = stateWithCrystallizedBranch();
-    const action = makeAction('move_to_past', 'P2',
-      { timeline: 'TL0', turn: 4, region: 'S' },
+    const state = stateWithPieceOnTLX();
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TLX', turn: 4, region: 'N' },
       { timeline: 'TLX', turn: 2, region: 'C' },
-      'piece-P2',
+      'piece-P1',
     );
     expect(() =>
       processAction(state, reachablePlugin, testTools, action,
-        { timeline: TL('TL0'), turn: T(4) }, false, undefined)
+        { timeline: TL('TLX'), turn: T(4) }, false, undefined)
     ).not.toThrow();
   });
 
@@ -344,5 +365,112 @@ describe('crystallizeDueWindows — timing', () => {
     // Stabilizing board must still be present at its original turn
     const stabilizingBoard = getBoardAt(crystallized.world, { timeline: node.timelineId, turn: T(1) });
     expect(stabilizingBoard).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Bug #22 — spatial moves on crystallized formation-window boards
+// ---------------------------------------------------------------------------
+
+describe('processAction — spatial move on crystallized formation-window board (bug #22)', () => {
+  it('allows a spatial move on a crystallized board whose turn falls in the formation window', () => {
+    // TLX: crystallized, divergedAtTurn=1, stabilizationPeriodTurns=2 → formation window T2..T3.
+    // A spatial move submitted on TLX:T2 has action.to.turn=2 — inside the window.
+    // This must NOT be blocked by the formation-window reachability check.
+    const e1 = makeEntity('piece-P1', 'P1', 'TLX', 2, 'N');
+    const state = stateWithCrystallizedBranch();
+    const board = getBoardAt(state.world, { timeline: TL('TLX'), turn: T(2) })!;
+    const updatedWorld = {
+      ...state.world,
+      boards: new Map(state.world.boards).set('TLX:2', { ...board, entities: new Map([[EID('piece-P1'), e1]]) }),
+    };
+    const stateWithPiece = { ...state, world: updatedWorld };
+
+    const action = makeAction('move', 'P1',
+      { timeline: 'TLX', turn: 2, region: 'N' },
+      { timeline: 'TLX', turn: 2, region: 'C' },
+      'piece-P1',
+    );
+    expect(() =>
+      processAction(stateWithPiece, testPlugin, testTools, action,
+        { timeline: TL('TLX'), turn: T(2) }, false, undefined)
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Bug #23 — temporal+lateral moves disallowed by engine
+// ---------------------------------------------------------------------------
+
+describe('processAction — temporal+lateral prohibition (bug #23)', () => {
+  it('rejects a move_to_past that crosses both timeline and turn (temporal+lateral)', () => {
+    // Piece on TL-branch:T3 tries to go to TL0:T1 — different timeline AND different turn.
+    // This is temporal+lateral, which the engine must block.
+    const e1 = makeEntity('piece-P1', 'P1', 'TL-branch', 3, 'N');
+    const world = makeWorld([
+      makeBoard('TL0', 1),
+      makeBoard('TL0', 2),
+      makeBoard('TL0', 3),
+      makeBoard('TL-branch', 1),
+      makeBoard('TL-branch', 2),
+      makeBoard('TL-branch', 3, { entities: [e1] }),
+    ]);
+    const base = makeState(world, ['P1', 'P2'], 3);
+    // TL-branch is crystallized (inStabilizationPeriod=false), parent=TL0
+    const branchNode = {
+      timelineId: TL('TL-branch'),
+      parentTimelineId: TL('TL0'),
+      divergedAtTurn: T(1),
+      divergedByActionId: 'act-seed' as any,
+      children: [],
+      stabilizationPeriodTurns: 2,
+      crystallizesAtGlobalTurn: T(4),
+      inStabilizationPeriod: false,
+      originAddress: { timeline: TL('TL0'), turn: T(1) },
+      initiatedBy: P('P1'),
+      originColumnPlayer: P('P1'),
+      triggerActionId: 'act-seed' as any,
+    };
+    const state = { ...base, branchTree: createBranch(base.branchTree, branchNode) };
+
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TL-branch', turn: 3, region: 'N' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P1',
+    );
+    expect(() =>
+      processAction(state, testPlugin, testTools, action,
+        { timeline: TL('TL-branch'), turn: T(3) }, false, undefined)
+    ).toThrow(/temporal.lateral|lateral.*temporal/i);
+  });
+
+  it('still allows a same-timeline move_to_past (pure temporal move)', () => {
+    // From TL-branch:T3 to TL-branch:T1 — same timeline, past turn → allowed.
+    const e1 = makeEntity('piece-P1', 'P1', 'TL-branch', 3, 'N');
+    const world = makeWorld([
+      makeBoard('TL-branch', 1),
+      makeBoard('TL-branch', 2),
+      makeBoard('TL-branch', 3, { entities: [e1] }),
+    ]);
+    const base = makeState(world, ['P1', 'P2'], 3);
+    const state = base; // no branch node needed — TL-branch not in tree, but TL0 is root
+
+    // Use TL0 directly to keep test simple: TL0:T3 → TL0:T1
+    const e2 = makeEntity('piece-P1', 'P1', 'TL0', 3, 'N');
+    const world2 = makeWorld([
+      makeBoard('TL0', 1),
+      makeBoard('TL0', 2),
+      makeBoard('TL0', 3, { entities: [e2] }),
+    ]);
+    const state2 = makeState(world2, ['P1', 'P2'], 3);
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TL0', turn: 3, region: 'N' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P1',
+    );
+    expect(() =>
+      processAction(state2, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(3) }, false, undefined)
+    ).not.toThrow();
   });
 });

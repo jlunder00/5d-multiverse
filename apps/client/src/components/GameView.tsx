@@ -121,9 +121,13 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     const regions = parseRegions(b.regions);
     const inStabilizationPeriod = b.inStabilizationPeriod ?? false;
 
-    // Past boards are highlighted as time-travel targets when a piece is selected.
-    // Uses the piece's own timeline's present turn (not the global clock).
-    const isTimeTravelTarget = !!selectedPiece && t < selectedPiece.fromBoard.turn;
+    // Time-travel targets: same timeline, past turn (pure temporal move).
+    // Valid moves require either same timeline OR same turn number — never both different
+    // (different timeline + different turn = temporal+lateral, disallowed).
+    // Stabilizing boards are a special case handled separately by the engine.
+    const isTimeTravelTarget = !!selectedPiece &&
+      tl === selectedPiece.fromBoard.timelineId &&
+      t < selectedPiece.fromBoard.turn;
 
     // Legal move regions: spatial on active board, all regions on time-travel target boards
     let legalMoveRegions: string[] | undefined;
