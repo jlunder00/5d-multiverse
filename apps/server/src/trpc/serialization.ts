@@ -4,7 +4,6 @@ import {
   BranchTree,
   BranchWindow,
   BranchId,
-  BoardAddress,
   RegionId,
   EntityId,
   PlayerId,
@@ -24,7 +23,6 @@ type SerializedBoard = Omit<Board, 'regions' | 'entities' | 'economies'> & {
 
 type SerializedWorldState = {
   boards: [string, SerializedBoard][];
-  pendingBranches: [string, unknown][];
 };
 
 export function serializeWorldState(world: WorldState): string {
@@ -38,8 +36,7 @@ export function serializeWorldState(world: WorldState): string {
       pluginData: board.pluginData,
     }]);
   }
-  const pendingBranches: [string, unknown][] = [...world.pendingBranches.entries()];
-  return JSON.stringify({ boards, pendingBranches } satisfies SerializedWorldState);
+  return JSON.stringify({ boards } satisfies SerializedWorldState);
 }
 
 export function deserializeWorldState(json: string): WorldState {
@@ -55,8 +52,7 @@ export function deserializeWorldState(json: string): WorldState {
     };
     boards.set(key, board);
   }
-  const pendingBranches = new Map(raw.pendingBranches as [BranchId, WorldState['pendingBranches'] extends Map<infer _K, infer V> ? V : never][]);
-  return { boards, pendingBranches };
+  return { boards };
 }
 
 export function serializeBranchTree(tree: BranchTree): string {

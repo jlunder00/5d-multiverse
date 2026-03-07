@@ -7,49 +7,17 @@ export const BranchIdSchema = z.string().brand<'BranchId'>();
 export type BranchId = z.infer<typeof BranchIdSchema>;
 
 /**
- * A pending branch is a ghost of a past timestate altered by one or more
- * player actions. It accumulates arrivals during its sliding window before
- * crystallizing into a new live timeline.
- *
- * When entities arrive at a pending branch, they complete the actions of the
- * turn they were sent from — subject to plugin-defined rules (e.g. a robber
- * must move to a hex and rob; units may attack or move; Risk limits attacks
- * after a time hop). Arrival actions execute in the pending timeline's context:
- * a robber that arrives must choose a target and steal a card — the card
- * immediately changes hands in the pending timeline's state (subsequent
- * arrivals see the updated hands), but cannot be played until crystallization. Side effects that belong solely to the source timeline
- * (e.g. resource discards triggered by a 7-roll) do not carry over to the
- * pending board.
- *
- * After completing their arrival actions, entities are inactive. The window
- * provides arrival ordering: each arriver completes their actions against the
- * state left by all prior arrivals, then is done. No further actions occur
- * until crystallization, at which point the origin column player takes the
- * first full turn on the new live timeline.
- */
-export const PendingBranchSchema = z.object({
-  id: BranchIdSchema,
-  /** The board address (timeline + turn) this branch originates from. */
-  originAddress: BoardAddressSchema,
-  /** The action that first triggered this branch. */
-  triggerActionId: ActionIdSchema,
-  /** Player who initiated the branch (opened the window). */
-  initiatedBy: PlayerIdSchema,
-  /**
-   * Player whose column the origin timestate was in.
-   * Takes the first turn on the new timeline after crystallization.
-   */
-  originColumnPlayer: PlayerIdSchema,
-  crystallized: z.boolean(),
-  crystallizedAtGlobalTurn: TurnSchema.optional(),
-  /** ID of the new timeline created on crystallization. */
-  crystallizedTimelineId: TimelineIdSchema.optional(),
-});
-export type PendingBranch = z.infer<typeof PendingBranchSchema>;
-
-/**
  * A node in the multiverse branch tree.
- * Each timeline has exactly one parent except the root.
+ *
+ * Each timeline has exactly one parent except the root (TL0).
+ *
+ * Branched timelines begin in a **stabilization period** — the first
+ * `stabilizationPeriodTurns` turns are temporally unstable and cannot
+ * be time-traveled to until crystallization. Crystallization is the
+ * moment the timeline solidifies and normal play begins.
+ *
+ * Fields from the former `PendingBranch` type are merged here so that
+ * all timelines are the same kind of object.
  */
 export const BranchNodeSchema = z.object({
   timelineId: TimelineIdSchema,
@@ -60,6 +28,32 @@ export const BranchNodeSchema = z.object({
   /** The action that caused this divergence. */
   divergedByActionId: ActionIdSchema.nullable(),
   children: z.array(TimelineIdSchema),
+
+  // --- Stabilization period ---
+
+  /** Number of turns that constitute the stabilization period (= player count). */
+  stabilizationPeriodTurns: z.number().int().nonnegative(),
+  /**
+   * The global turn at which the stabilization period ends and the
+   * timeline crystallizes (becomes fully reachable per plugin settings).
+   */
+  crystallizesAtGlobalTurn: TurnSchema,
+  /** True while the timeline is still within its stabilization period. */
+  inStabilizationPeriod: z.boolean(),
+
+  // --- Branch origin (null on root timeline) ---
+
+  /** The board address (timeline + turn) this timeline branched from. */
+  originAddress: BoardAddressSchema.nullable(),
+  /** Player who initiated the branch (opened the sliding window). */
+  initiatedBy: PlayerIdSchema.nullable(),
+  /**
+   * Player whose column the origin timestate was in.
+   * Takes the first turn on this timeline after crystallization.
+   */
+  originColumnPlayer: PlayerIdSchema.nullable(),
+  /** The action that first triggered this branch. */
+  triggerActionId: ActionIdSchema.nullable(),
 });
 export type BranchNode = z.infer<typeof BranchNodeSchema>;
 
@@ -67,6 +61,5 @@ export type BranchNode = z.infer<typeof BranchNodeSchema>;
 export const BranchTreeSchema = z.object({
   rootTimelineId: TimelineIdSchema,
   nodes: z.record(z.string(), BranchNodeSchema),
-  pendingBranches: z.record(z.string(), PendingBranchSchema),
 });
 export type BranchTree = z.infer<typeof BranchTreeSchema>;

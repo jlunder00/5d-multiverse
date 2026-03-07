@@ -140,7 +140,6 @@ const actionEvaluator: IActionEvaluator = {
     }
 
     if (type === ('move_to_past' as typeof type) && entityId) {
-      // Remove piece from source board; engine places it on the ghost board.
       return { actionId: action.id, success: true, effects: [{ type: 'entity_remove', entityId }] };
     }
 
@@ -149,14 +148,11 @@ const actionEvaluator: IActionEvaluator = {
 };
 
 // ---------------------------------------------------------------------------
-// Branch trigger — fires on time_branch actions
+// Branch trigger — fires on move_to_past actions
 // ---------------------------------------------------------------------------
 
 const branchTrigger: IBranchTrigger = {
   shouldBranch(action: Action, result: ActionResult, _context: ActionContext): boolean {
-    // Return true for any successful move_to_past.
-    // The engine handles both cases: new branch creation (first arrival) and
-    // merging into an existing ghost board (subsequent arrivals).
     return (action.type as string) === 'move_to_past' && result.success;
   },
   getBranchOrigin(action: Action): BoardAddress {
@@ -169,7 +165,7 @@ const branchTrigger: IBranchTrigger = {
 // ---------------------------------------------------------------------------
 
 const arrivalPolicy: IArrivalPolicy = {
-  getArrivalActions(): Action[] {
+  getArrivalActions(_branchId, _arrivingEntities, _context): Action[] {
     return [];
   },
   looseModeConflictResolvers: [],
@@ -234,6 +230,8 @@ export const stubPlugin: IGameDefinition = {
   windowMode: 'n',
   defaultAdjacencyMode: 'strict',
   defaultMovementMode: 'staged',
+  tl0StabilizationReachable: true,
+  branchStabilizationReachable: false,
   minPlayers: 1,
   maxPlayers: 4,
   settings: [],

@@ -3,32 +3,27 @@ import {
   Board,
   BranchId,
   PlayerId,
-  boardKey,
 } from '@5d/types';
 
 /**
- * A player is party to a pending branch if they have committed actions there.
- * The engine tracks this via the party set stored in plugin data on the pending board.
+ * A player is party to a stabilization-period board if they have committed
+ * actions there. The engine tracks this via the parties list in pluginData.
  */
 export function isParty(world: WorldState, branchId: BranchId, playerId: PlayerId): boolean {
-  const branch = world.pendingBranches.get(branchId);
-  if (!branch) return false;
-  // The initiator is always a party
-  if (branch.initiatedBy === playerId) return true;
-  // Others are party if they have a pending board with their actions recorded
-  // Convention: the pending board's pluginData['parties'] is a string[] of player IDs
-  const pendingBoardKey = boardKey(branch.originAddress);
-  const pendingBoard = world.boards.get(pendingBoardKey);
-  if (!pendingBoard) return false;
-  const parties = pendingBoard.pluginData['parties'];
-  if (Array.isArray(parties)) {
-    return (parties as string[]).includes(playerId as string);
+  // branchId === timelineId as string — find any board on that timeline
+  for (const [, board] of world.boards) {
+    if ((board.address.timeline as string) !== (branchId as string)) continue;
+    if (board.pluginData['initiatedBy'] === (playerId as string)) return true;
+    const parties = board.pluginData['parties'];
+    if (Array.isArray(parties) && (parties as string[]).includes(playerId as string)) {
+      return true;
+    }
   }
   return false;
 }
 
 /**
- * Records a player as a party to a pending branch by updating the pending board's
+ * Records a player as a party to a branch by updating the board's
  * pluginData['parties'] list. Returns the updated board.
  */
 export function addParty(board: Board, playerId: PlayerId): Board {
@@ -41,10 +36,6 @@ export function addParty(board: Board, playerId: PlayerId): Board {
   return { ...board, pluginData: { ...board.pluginData, parties } };
 }
 
-/**
- * Returns a view of the world filtered for the given player under the given fog setting.
- * This is the top-level filter — use fog-of-war.ts for per-setting logic.
- */
 export type FogSetting = 'full_information' | 'current_turn_fog' | 'timeline_fog';
 
 export interface PlayerView {
@@ -55,30 +46,27 @@ export interface PlayerView {
 }
 
 /**
- * Returns the pending board's current state for a party member, or the
- * historical board (origin board) for a non-party member.
+ * Returns a view of the board for the given player — current state if party,
+ * historical snapshot if non-party, or undefined if not visible at all.
  */
 export function getBoardViewForPlayer(
   world: WorldState,
   branchId: BranchId,
   playerId: PlayerId,
 ): Board | undefined {
-  const branch = world.pendingBranches.get(branchId);
-  if (!branch) return undefined;
+  // Find the board on this timeline (stabilization start turn = any board on the timeline)
+  for (const [, board] of world.boards) {
+    if ((board.address.timeline as string) !== (branchId as string)) continue;
 
-  const currentBoard = world.boards.get(boardKey(branch.originAddress));
+    if (isParty(world, branchId, playerId)) {
+      return board;
+    }
 
-  if (isParty(world, branchId, playerId)) {
-    // Party sees current pending state
-    return currentBoard;
-  }
-
-  // Non-party sees historical state, stored in pluginData['historicalSnapshot']
-  if (currentBoard) {
-    const snapshot = currentBoard.pluginData['historicalSnapshot'];
+    const snapshot = board.pluginData['historicalSnapshot'];
     if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
       return snapshot as Board;
     }
+    return undefined;
   }
   return undefined;
 }
