@@ -42,7 +42,7 @@ function getStabilizingNode(state: ReturnType<typeof stateWithStabilizingBranch>
 /**
  * Manually build a state where TLX is already crystallized (inStabilizationPeriod = false).
  * TL0 at T=4, TLX branched from TL0:T=1, stabilizationPeriodTurns=2.
- * Formation-window turns for TLX: T=2 and T=3.
+ * Formation-window turns for TLX: T=2 only (divergedAtTurn+1..divergedAtTurn+stabilizationPeriodTurns-1).
  */
 function stateWithCrystallizedBranch() {
   const e2 = makeEntity('piece-P2', 'P2', 'TL0', 4, 'S');
@@ -197,7 +197,7 @@ describe('processAction — formation-window reachability', () => {
 
   it('rejects time travel to a formation-window turn on a crystallized branch when branchStabilizationReachable = false', () => {
     // P1 on TLX:T4 travels to TLX:T2 — same timeline, pure temporal.
-    // TLX formation-window turns: T2 and T3 (divergedAtTurn=1, stabilizationPeriodTurns=2).
+    // TLX formation-window turns: T2 only (divergedAtTurn=1, stabilizationPeriodTurns=2 → window is T2..T2).
     // testPlugin has branchStabilizationReachable = false → reject.
     const state = stateWithPieceOnTLX();
     const action = makeAction('move_to_past', 'P1',
@@ -230,7 +230,7 @@ describe('processAction — formation-window reachability', () => {
   });
 
   it('allows time travel to a non-formation-window turn on a crystallized branch', () => {
-    // TLX:T=4 is outside the formation window (formation ends at T=3)
+    // TLX:T=4 is outside the formation window (formation ends at T=2 after fix #24)
     const state = stateWithCrystallizedBranch();
     const e1 = makeEntity('piece-P1', 'P1', 'TL0', 4, 'N');
     const board = getBoardAt(state.world, { timeline: TL('TL0'), turn: T(4) })!;
@@ -254,6 +254,26 @@ describe('processAction — formation-window reachability', () => {
       thrownMsg = (e as Error).message;
     }
     expect(thrownMsg).not.toMatch(/formation.window|unreachable/i);
+  });
+
+  it('allows time travel to the first post-crystallization turn (bug #24)', () => {
+    // divergedAtTurn=1, stabilizationPeriodTurns=2 → correct formation window is T2 only.
+    // T3 is the first board created AFTER crystallization and must be reachable.
+    // The buggy formula incorrectly includes T3 in the formation window.
+    const state = stateWithPieceOnTLX();
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TLX', turn: 4, region: 'N' },
+      { timeline: 'TLX', turn: 3, region: 'C' },
+      'piece-P1',
+    );
+    let thrownMsg = '';
+    try {
+      processAction(state, testPlugin, testTools, action,
+        { timeline: TL('TLX'), turn: T(4) }, false, undefined);
+    } catch (e) {
+      thrownMsg = (e as Error).message;
+    }
+    expect(thrownMsg).not.toMatch(/formation.window/i);
   });
 });
 

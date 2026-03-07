@@ -115,7 +115,13 @@ export function isFormationWindowReachable(
 
   const isRoot = node.parentTimelineId === null;
   const formationStart = isRoot ? 1 : (node.divergedAtTurn as number) + 1;
-  const formationEnd = formationStart + node.stabilizationPeriodTurns - 1;
+  // Root: formation window is T1..stabilizationPeriodTurns (n boards created during stabilization).
+  // Branch: advanceAllTimelines runs AFTER crystallizeDueWindows on the final turn, so only
+  // (stabilizationPeriodTurns - 1) boards are created during stabilization. The last advance is
+  // post-crystallization. Formation window = (divergedAtTurn+1)..(divergedAtTurn+stabilizationPeriodTurns-1).
+  const formationEnd = isRoot
+    ? formationStart + node.stabilizationPeriodTurns - 1
+    : (node.divergedAtTurn as number) + node.stabilizationPeriodTurns - 1;
 
   if ((turn as number) < formationStart || (turn as number) > formationEnd) {
     return true; // outside formation window — always reachable
