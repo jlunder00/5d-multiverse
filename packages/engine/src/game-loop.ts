@@ -15,7 +15,7 @@ import {
 import { getBoardAt, applyResultToWorld, setBoard } from './world-state.js';
 import { getCurrentPlayer, advanceGlobalTurn } from './execution-order.js';
 import { openWindow, shouldClose, isHalfActionPending, markHalfActionUsed, computeHalfActionBoards } from './window-manager.js';
-import { createBranch, crystallizeBranch, findBranchByOrigin } from './branch-tree.js';
+import { createBranch, crystallizeBranch, findBranchByOrigin, isInStabilizationPeriod, isFormationWindowReachable } from './branch-tree.js';
 import { addParty } from './information-model.js';
 import { BranchTree, BranchNode, BranchWindow, Turn, TimelineId, EntityId } from '@5d/types';
 
@@ -71,6 +71,23 @@ export function processAction(
   halfActionBranchId: BranchId | undefined,
 ): GameLoopState {
   const player = getCurrentPlayer(state.order);
+
+  // Engine invariant: cannot directly target a timeline in its stabilization period.
+  // Subsequent arrivals target the parent timeline's origin address, not the branch.
+  if (isInStabilizationPeriod(state.branchTree, action.to.timeline as TimelineId)) {
+    throw new Error(
+      `Cannot submit action: destination timeline ${action.to.timeline as string} is currently in its stabilization period`,
+    );
+  }
+
+  // Formation-window reachability: turns within a crystallized timeline's stabilization
+  // period may be permanently unreachable depending on plugin settings.
+  if (!isFormationWindowReachable(state.branchTree, action.to.timeline as TimelineId, action.to.turn as Turn, plugin)) {
+    throw new Error(
+      `Cannot submit action: turn ${action.to.turn as number} on timeline ${action.to.timeline as string} is a formation-window turn and is not reachable after crystallization`,
+    );
+  }
+
   const context = buildContext(
     state.world, address, player, state.order, plugin, tools,
     isHalfAction, halfActionBranchId,
