@@ -114,11 +114,15 @@ export function isFormationWindowReachable(
   if (node.inStabilizationPeriod) return false; // still stabilizing
 
   const isRoot = node.parentTimelineId === null;
-  const formationStart = isRoot ? 1 : (node.divergedAtTurn as number) + 1;
-  // Root: formation window is T1..stabilizationPeriodTurns (n boards created during stabilization).
-  // Branch: advanceAllTimelines runs AFTER crystallizeDueWindows on the final turn, so only
-  // (stabilizationPeriodTurns - 1) boards are created during stabilization. The last advance is
-  // post-crystallization. Formation window = (divergedAtTurn+1)..(divergedAtTurn+stabilizationPeriodTurns-1).
+  // Formation window starts at divergedAtTurn (the origin board, copied at branch creation)
+  // because that board was also created during the unstable formation period.
+  // Root has no divergedAtTurn so its window starts at T1.
+  const formationStart = isRoot ? 1 : (node.divergedAtTurn as number);
+  // Formation window is exactly stabilizationPeriodTurns wide:
+  //   root:   T1 .. stabilizationPeriodTurns
+  //   branch: divergedAtTurn .. divergedAtTurn + stabilizationPeriodTurns - 1
+  // advanceAllTimelines fires AFTER crystallizeDueWindows on the closing turn, so the last
+  // advance produces the first post-crystallization board (outside the window).
   const formationEnd = isRoot
     ? formationStart + node.stabilizationPeriodTurns - 1
     : (node.divergedAtTurn as number) + node.stabilizationPeriodTurns - 1;
