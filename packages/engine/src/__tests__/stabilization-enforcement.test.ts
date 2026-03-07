@@ -346,3 +346,110 @@ describe('crystallizeDueWindows — timing', () => {
     expect(stabilizingBoard).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 5. Bug #22 — spatial moves on crystallized formation-window boards
+// ---------------------------------------------------------------------------
+
+describe('processAction — spatial move on crystallized formation-window board (bug #22)', () => {
+  it('allows a spatial move on a crystallized board whose turn falls in the formation window', () => {
+    // TLX: crystallized, divergedAtTurn=1, stabilizationPeriodTurns=2 → formation window T2..T3.
+    // A spatial move submitted on TLX:T2 has action.to.turn=2 — inside the window.
+    // This must NOT be blocked by the formation-window reachability check.
+    const e1 = makeEntity('piece-P1', 'P1', 'TLX', 2, 'N');
+    const state = stateWithCrystallizedBranch();
+    const board = getBoardAt(state.world, { timeline: TL('TLX'), turn: T(2) })!;
+    const updatedWorld = {
+      ...state.world,
+      boards: new Map(state.world.boards).set('TLX:2', { ...board, entities: new Map([[EID('piece-P1'), e1]]) }),
+    };
+    const stateWithPiece = { ...state, world: updatedWorld };
+
+    const action = makeAction('move', 'P1',
+      { timeline: 'TLX', turn: 2, region: 'N' },
+      { timeline: 'TLX', turn: 2, region: 'C' },
+      'piece-P1',
+    );
+    expect(() =>
+      processAction(stateWithPiece, testPlugin, testTools, action,
+        { timeline: TL('TLX'), turn: T(2) }, false, undefined)
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Bug #23 — temporal+lateral moves disallowed by engine
+// ---------------------------------------------------------------------------
+
+describe('processAction — temporal+lateral prohibition (bug #23)', () => {
+  it('rejects a move_to_past that crosses both timeline and turn (temporal+lateral)', () => {
+    // Piece on TL-branch:T3 tries to go to TL0:T1 — different timeline AND different turn.
+    // This is temporal+lateral, which the engine must block.
+    const e1 = makeEntity('piece-P1', 'P1', 'TL-branch', 3, 'N');
+    const world = makeWorld([
+      makeBoard('TL0', 1),
+      makeBoard('TL0', 2),
+      makeBoard('TL0', 3),
+      makeBoard('TL-branch', 1),
+      makeBoard('TL-branch', 2),
+      makeBoard('TL-branch', 3, { entities: [e1] }),
+    ]);
+    const base = makeState(world, ['P1', 'P2'], 3);
+    // TL-branch is crystallized (inStabilizationPeriod=false), parent=TL0
+    const branchNode = {
+      timelineId: TL('TL-branch'),
+      parentTimelineId: TL('TL0'),
+      divergedAtTurn: T(1),
+      divergedByActionId: 'act-seed' as any,
+      children: [],
+      stabilizationPeriodTurns: 2,
+      crystallizesAtGlobalTurn: T(4),
+      inStabilizationPeriod: false,
+      originAddress: { timeline: TL('TL0'), turn: T(1) },
+      initiatedBy: P('P1'),
+      originColumnPlayer: P('P1'),
+      triggerActionId: 'act-seed' as any,
+    };
+    const state = { ...base, branchTree: createBranch(base.branchTree, branchNode) };
+
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TL-branch', turn: 3, region: 'N' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P1',
+    );
+    expect(() =>
+      processAction(state, testPlugin, testTools, action,
+        { timeline: TL('TL-branch'), turn: T(3) }, false, undefined)
+    ).toThrow(/temporal.lateral|lateral.*temporal/i);
+  });
+
+  it('still allows a same-timeline move_to_past (pure temporal move)', () => {
+    // From TL-branch:T3 to TL-branch:T1 — same timeline, past turn → allowed.
+    const e1 = makeEntity('piece-P1', 'P1', 'TL-branch', 3, 'N');
+    const world = makeWorld([
+      makeBoard('TL-branch', 1),
+      makeBoard('TL-branch', 2),
+      makeBoard('TL-branch', 3, { entities: [e1] }),
+    ]);
+    const base = makeState(world, ['P1', 'P2'], 3);
+    const state = base; // no branch node needed — TL-branch not in tree, but TL0 is root
+
+    // Use TL0 directly to keep test simple: TL0:T3 → TL0:T1
+    const e2 = makeEntity('piece-P1', 'P1', 'TL0', 3, 'N');
+    const world2 = makeWorld([
+      makeBoard('TL0', 1),
+      makeBoard('TL0', 2),
+      makeBoard('TL0', 3, { entities: [e2] }),
+    ]);
+    const state2 = makeState(world2, ['P1', 'P2'], 3);
+    const action = makeAction('move_to_past', 'P1',
+      { timeline: 'TL0', turn: 3, region: 'N' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P1',
+    );
+    expect(() =>
+      processAction(state2, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(3) }, false, undefined)
+    ).not.toThrow();
+  });
+});
