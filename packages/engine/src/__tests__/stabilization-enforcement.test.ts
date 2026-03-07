@@ -78,18 +78,38 @@ function stateWithCrystallizedBranch() {
 // ---------------------------------------------------------------------------
 
 describe('processAction — stabilization enforcement', () => {
-  it('rejects an action whose destination timeline is currently in stabilization', () => {
-    const state = stateWithStabilizingBranch();
-    const stabilizingTlId = getStabilizingNode(state).timelineId as string;
+  it('rejects an action targeting a stabilizing timeline when the sender is not the parent', () => {
+    // Build a state with TLX (child of TL0, in stabilization) and TLY (child of TLX).
+    // P2 on TL0 tries to target TLY directly. TL0 is not TLY's parent → reject.
+    const base = stateWithStabilizingBranch();
+    const stabilizingTlId = getStabilizingNode(base).timelineId as string;
 
-    // P2 tries to move_to_past directly to the stabilizing timeline's board.
-    // This is distinct from a legitimate subsequent arrival (which targets TL0:T1, not TLX).
+    // Add TLY board (child of TLX) to world and branchTree
+    const tlyBoard = makeBoard('TLY', 1);
+    const tlyNode = {
+      timelineId: TL('TLY'),
+      parentTimelineId: TL(stabilizingTlId),
+      divergedAtTurn: T(1),
+      divergedByActionId: 'act-seed' as any,
+      children: [],
+      stabilizationPeriodTurns: 2,
+      crystallizesAtGlobalTurn: T(4),
+      inStabilizationPeriod: true,
+      originAddress: { timeline: TL(stabilizingTlId), turn: T(1) },
+      initiatedBy: P('P1'),
+      originColumnPlayer: P('P1'),
+      triggerActionId: 'act-seed' as any,
+    };
+    const world2 = { boards: new Map([...base.world.boards, ['TLY:1', tlyBoard]]) };
+    const bt2 = createBranch(base.branchTree, tlyNode);
+    const state = { ...base, world: world2, branchTree: bt2 };
+
+    // P2 on TL0:T2 targets TLY:T1. TL0 ≠ TLY's parent (TLX) → should throw stabilization error
     const action = makeAction('move_to_past', 'P2',
       { timeline: 'TL0', turn: 2, region: 'S' },
-      { timeline: stabilizingTlId, turn: 1, region: 'E' },
+      { timeline: 'TLY', turn: 1, region: 'E' },
       'piece-P2',
     );
-    // Advance to P2's turn
     const state2 = { ...state, order: { ...state.order, currentIndex: 1 } };
 
     expect(() =>
