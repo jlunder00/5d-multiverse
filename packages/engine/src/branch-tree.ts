@@ -2,7 +2,6 @@ import {
   BranchTree,
   BranchNode,
   BranchId,
-  PendingBranch,
   TimelineId,
   BoardAddress,
   Turn,
@@ -15,77 +14,94 @@ export function createRootTimeline(rootTimelineId: TimelineId): BranchTree {
     divergedAtTurn: null,
     divergedByActionId: null,
     children: [],
+    // Root timeline: no stabilization period — it begins already crystallized.
+    // The server may update this for a real TL0 stabilization window.
+    stabilizationPeriodTurns: 0,
+    crystallizesAtGlobalTurn: 0 as Turn,
+    inStabilizationPeriod: false,
+    originAddress: null,
+    initiatedBy: null,
+    originColumnPlayer: null,
+    triggerActionId: null,
   };
   return {
     rootTimelineId,
     nodes: { [rootTimelineId]: rootNode },
-    pendingBranches: {},
   };
 }
 
-export function createPendingBranch(
+/** Adds a new BranchNode to the tree and wires it to its parent's children list. */
+export function createBranch(
   tree: BranchTree,
-  branch: PendingBranch,
+  branchNode: BranchNode,
 ): BranchTree {
-  return {
-    ...tree,
-    pendingBranches: {
-      ...tree.pendingBranches,
-      [branch.id]: branch,
-    },
-  };
-}
+  const parentId = branchNode.parentTimelineId;
+  if (!parentId) throw new Error('createBranch: branchNode must have a parentTimelineId');
 
-/**
- * Crystallizes a pending branch: marks it as crystallized, creates a new
- * BranchNode for the new timeline, and wires it into its parent.
- */
-export function crystallizeBranch(
-  tree: BranchTree,
-  branchId: BranchId,
-  newTimelineId: TimelineId,
-  crystallizedAtGlobalTurn: Turn,
-): BranchTree {
-  const pending = tree.pendingBranches[branchId];
-  if (!pending) throw new Error(`No pending branch: ${branchId}`);
-  if (pending.crystallized) throw new Error(`Branch already crystallized: ${branchId}`);
-
-  const parentTimelineId = pending.originAddress.timeline;
-  const parentNode = tree.nodes[parentTimelineId];
-  if (!parentNode) throw new Error(`Parent timeline not found: ${parentTimelineId}`);
-
-  const newNode: BranchNode = {
-    timelineId: newTimelineId,
-    parentTimelineId,
-    divergedAtTurn: pending.originAddress.turn,
-    divergedByActionId: pending.triggerActionId,
-    children: [],
-  };
+  const parentNode = tree.nodes[parentId];
+  if (!parentNode) throw new Error(`Parent timeline not found: ${parentId}`);
 
   const updatedParent: BranchNode = {
     ...parentNode,
-    children: [...parentNode.children, newTimelineId],
-  };
-
-  const updatedPending: PendingBranch = {
-    ...pending,
-    crystallized: true,
-    crystallizedAtGlobalTurn,
-    crystallizedTimelineId: newTimelineId,
+    children: [...parentNode.children, branchNode.timelineId],
   };
 
   return {
     ...tree,
     nodes: {
       ...tree.nodes,
-      [parentTimelineId]: updatedParent,
-      [newTimelineId]: newNode,
-    },
-    pendingBranches: {
-      ...tree.pendingBranches,
-      [branchId]: updatedPending,
+      [parentId]: updatedParent,
+      [branchNode.timelineId]: branchNode,
     },
   };
+}
+
+/**
+ * Crystallizes a timeline: clears `inStabilizationPeriod` on its node.
+ * No board manipulation — boards already exist from `advanceAllTimelines`.
+ */
+export function crystallizeBranch(
+  tree: BranchTree,
+  timelineId: TimelineId,
+): BranchTree {
+  const node = tree.nodes[timelineId];
+  if (!node) throw new Error(`Timeline not found: ${timelineId}`);
+  if (!node.inStabilizationPeriod) return tree; // already crystallized
+
+  return {
+    ...tree,
+    nodes: {
+      ...tree.nodes,
+      [timelineId]: { ...node, inStabilizationPeriod: false },
+    },
+  };
+}
+
+/**
+ * Returns true if the given timeline is still within its stabilization period.
+ */
+export function isInStabilizationPeriod(
+  tree: BranchTree,
+  timelineId: TimelineId,
+): boolean {
+  const node = tree.nodes[timelineId];
+  return node?.inStabilizationPeriod ?? false;
+}
+
+/**
+ * Finds the BranchNode for a branch whose originAddress matches the given address.
+ * Used to detect subsequent arrivals to an in-window timeline.
+ */
+export function findBranchByOrigin(
+  tree: BranchTree,
+  originAddress: BoardAddress,
+): BranchNode | undefined {
+  return Object.values(tree.nodes).find(
+    (node) =>
+      node.inStabilizationPeriod &&
+      node.originAddress?.timeline === originAddress.timeline &&
+      node.originAddress?.turn === originAddress.turn,
+  );
 }
 
 /**
@@ -126,12 +142,6 @@ export function lowestCommonAncestor(
 /**
  * Returns the existing (played) board addresses along the lateral path between
  * two timelines at the given turn number.
- *
- * The path goes: from.timeline → LCA → to.timeline. Only includes boards at
- * timelines that have actually been played (i.e. exist in the world state).
- * The caller filters by existing boards since branch-tree only knows topology.
- *
- * Returns the ordered list of intermediate timeline IDs (excluding from and to).
  */
 export function getIntermediateTimelines(
   tree: BranchTree,
@@ -143,18 +153,14 @@ export function getIntermediateTimelines(
   const pathFrom = getAncestorPath(tree, from).map((n) => n.timelineId);
   const pathTo = getAncestorPath(tree, to).map((n) => n.timelineId);
 
-  // Find LCA index in each path
   const setFrom = new Set(pathFrom);
   let lcaIndex = pathTo.findIndex((id) => setFrom.has(id));
   if (lcaIndex === -1) throw new Error(`No common ancestor between ${from} and ${to}`);
   const lca = pathTo[lcaIndex]!;
 
-  // pathFrom goes root→from; upward segment is from→lca (reversed)
   const fromToLca = pathFrom.slice(pathFrom.indexOf(lca) + 1).reverse();
-  // pathTo goes root→to; downward segment is lca→to
   const lcaToTo = pathTo.slice(lcaIndex + 1);
 
-  // Full path from→lca→to, excluding endpoints
   return [...fromToLca, lca, ...lcaToTo].filter((id) => id !== from && id !== to);
 }
 
@@ -168,7 +174,6 @@ export function getLateralIntermediateBoards(
   to: BoardAddress,
 ): BoardAddress[] {
   const intermediateTimelines = getIntermediateTimelines(tree, from.timeline, to.timeline);
-  // Use the turn from `from` — lateral moves stay at the same turn
   const turn = from.turn as Turn;
   return intermediateTimelines.map((timeline) => ({ timeline, turn }));
 }
