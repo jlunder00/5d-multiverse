@@ -104,7 +104,7 @@ export const appRouter = router({
       const players = input.players as PlayerId[];
       const initialBoard = plugin.createInitialBoard(players, input.settings);
       const boards = new Map([[boardKey(initialBoard.address), initialBoard]]);
-      const world = { boards, pendingBranches: new Map() };
+      const world = { boards };
       const order = createExecutionOrder(players, 1 as ReturnType<typeof createExecutionOrder>['globalTurn']);
       const state: GameLoopState = {
         world,
@@ -117,9 +117,15 @@ export const appRouter = router({
               divergedAtTurn: null,
               divergedByActionId: null,
               children: [],
+              stabilizationPeriodTurns: players.length,
+              crystallizesAtGlobalTurn: players.length as ReturnType<typeof createExecutionOrder>['globalTurn'],
+              inStabilizationPeriod: false,
+              originAddress: null,
+              initiatedBy: null,
+              originColumnPlayer: null,
+              triggerActionId: null,
             },
           },
-          pendingBranches: {},
         },
         order,
         windows: new Map(),
@@ -179,8 +185,8 @@ export const appRouter = router({
           entities: [...board.entities.entries()],
           economies: [...board.economies.entries()],
           pluginData: board.pluginData,
+          inStabilizationPeriod: state.branchTree.nodes[board.address.timeline as string]?.inStabilizationPeriod ?? false,
         })),
-        pendingBranches: [...filtered.pendingBranches.entries()],
         currentPlayer: activePlayer,
         globalTurn: state.order.globalTurn,
         winner: state.winner,
@@ -209,7 +215,6 @@ export const appRouter = router({
       let state = loadGameState(row);
       const playerId = ctx.playerId as PlayerId;
 
-      // Verify it's this player's turn
       const currentPlayer = state.order.priorityQueue[state.order.currentIndex];
       if (currentPlayer !== playerId) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Not your turn' });
@@ -217,7 +222,6 @@ export const appRouter = router({
 
       const address = input.boardAddress as { timeline: ReturnType<typeof Object.keys>[number]; turn: number } as Parameters<typeof processAction>[4];
 
-      let result: ReturnType<typeof processAction>['world'] | undefined;
       try {
         state = processAction(
           state,
@@ -235,7 +239,6 @@ export const appRouter = router({
         });
       }
 
-      // Check win condition
       const winner = checkWinCondition(state, plugin);
       if (winner) state = { ...state, winner };
 
@@ -283,12 +286,10 @@ export const appRouter = router({
         state,
         plugin,
         tools,
-        (s: GameLoopState, _window: BranchWindow) => s, // half-action callback: no-op (client drives this)
+        (s: GameLoopState, _window: BranchWindow) => s,
         () => `TL${nextTimelineCounter++}`,
       );
 
-      // Every endTurn: advance every timeline's latest board by one turn.
-      // This includes ghost/pending timelines so they stay in sync.
       if (state.order.globalTurn > prevGlobalTurn) {
         state = { ...state, world: advanceAllTimelines(state.world) };
       }
