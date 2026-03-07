@@ -112,6 +112,23 @@ describe('processAction — stabilization enforcement', () => {
         { timeline: TL('TL0'), turn: T(2) }, false, undefined)
     ).not.toThrow();
   });
+
+  it('does NOT reject a direct arrival that targets the stabilizing timeline board from parent present', () => {
+    // P2 sends directly to TLX:T1 (the stabilizing timeline's first board).
+    // This is a subsequent arrival via direct addressing — should be allowed.
+    const state = stateWithStabilizingBranch();
+    const stabilizingNode = getStabilizingNode(state);
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 2, region: 'S' },
+      { timeline: stabilizingNode.timelineId as string, turn: 1, region: 'E' },
+      'piece-P2',
+    );
+    const state2 = { ...state, order: { ...state.order, currentIndex: 1 } };
+    expect(() =>
+      processAction(state2, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(2) }, false, undefined)
+    ).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
