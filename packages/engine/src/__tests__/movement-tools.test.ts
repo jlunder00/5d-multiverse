@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createMovementTools } from '../tools/movement.js';
-import { createRootTimeline, crystallizeBranch } from '../branch-tree.js';
-import type { RegionId, TimelineId, Turn, BranchId } from '@5d/types';
+import { createRootTimeline, createBranch, crystallizeBranch } from '../branch-tree.js';
+import type { RegionId } from '@5d/types';
 import { TL, T, RID } from './helpers.js';
 
 const ADJACENCY: Record<string, string[]> = {
@@ -17,23 +17,22 @@ const tools = createMovementTools((r) => (ADJACENCY[r as string] ?? []) as Regio
 // Build a branch tree with TL0 as root, TL1 as child branching at T=2
 function twoTimelineTree() {
   let tree = createRootTimeline(TL('TL0'));
-  // Manually add TL1 as a crystallized branch
-  const fakeBranchId = 'branch-1' as BranchId;
-  tree = {
-    ...tree,
-    pendingBranches: {
-      [fakeBranchId]: {
-        id: fakeBranchId,
-        originAddress: { timeline: TL('TL0'), turn: T(2) },
-        triggerActionId: 'act-1' as any,
-        initiatedBy: 'P1' as any,
-        originColumnPlayer: 'P1' as any,
-        crystallized: false,
-        crystallizedTimelineId: TL('TL1'),
-      },
-    },
-  };
-  return crystallizeBranch(tree, fakeBranchId, TL('TL1'), T(4));
+  // Add TL1 as an in-stabilization branch, then crystallize it
+  tree = createBranch(tree, {
+    timelineId: TL('TL1'),
+    parentTimelineId: TL('TL0'),
+    divergedAtTurn: T(2),
+    divergedByActionId: 'act-1' as any,
+    children: [],
+    stabilizationPeriodTurns: 2,
+    crystallizesAtGlobalTurn: T(4),
+    inStabilizationPeriod: true,
+    originAddress: { timeline: TL('TL0'), turn: T(2) },
+    initiatedBy: 'P1' as any,
+    originColumnPlayer: 'P1' as any,
+    triggerActionId: 'act-1' as any,
+  });
+  return crystallizeBranch(tree, TL('TL1'));
 }
 
 // ---------------------------------------------------------------------------

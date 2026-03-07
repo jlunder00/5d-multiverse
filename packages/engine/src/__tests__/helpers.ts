@@ -135,16 +135,10 @@ const actionEvaluator: IActionEvaluator = {
 };
 
 const branchTrigger: IBranchTrigger = {
-  shouldBranch(action: Action, result: ActionResult, context: ActionContext): boolean {
-    if ((action.type as string) !== 'move_to_past' || !result.success) return false;
-    for (const b of context.world.pendingBranches.values()) {
-      if (
-        b.originAddress.timeline === action.to.timeline &&
-        b.originAddress.turn === action.to.turn &&
-        !b.crystallized
-      ) return false;
-    }
-    return true;
+  shouldBranch(action: Action, result: ActionResult, _context: ActionContext): boolean {
+    // Always return true for move_to_past — the engine detects subsequent arrivals
+    // internally and merges them into the existing ghost board.
+    return (action.type as string) === 'move_to_past' && result.success;
   },
   getBranchOrigin(action: Action): BoardAddress {
     return { timeline: action.to.timeline, turn: action.to.turn };
@@ -167,6 +161,8 @@ export const testPlugin: IGameDefinition = {
   windowMode: 'n',
   defaultAdjacencyMode: 'strict',
   defaultMovementMode: 'staged',
+  tl0StabilizationReachable: true,
+  branchStabilizationReachable: false,
   minPlayers: 1,
   maxPlayers: 4,
   settings: [],
@@ -221,8 +217,8 @@ export function makeBoard(
     (opts.entities ?? []).map((e) => [e.id, e]),
   );
   const pluginData: Record<string, unknown> = {};
-  if (opts.isPending) pluginData['isPendingBranch'] = true;
-  if (opts.originAddress) pluginData['originAddress'] = opts.originAddress;
+
+
 
   return { address: { timeline: tl, turn: tr }, regions, entities, economies: new Map(), pluginData };
 }
@@ -247,7 +243,7 @@ export function makeEntity(
 /** Build a WorldState from an array of boards. */
 export function makeWorld(boards: Board[]): WorldState {
   const map = new Map<string, Board>(boards.map((b) => [boardKey(b.address), b]));
-  return { boards: map, pendingBranches: new Map() };
+  return { boards: map };
 }
 
 /** Build a minimal GameLoopState. */

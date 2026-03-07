@@ -6,18 +6,18 @@ interface BoardEntry {
   entities: [string, unknown][];
   economies: [string, unknown][];
   pluginData: Record<string, unknown>;
+  inStabilizationPeriod: boolean;
 }
 
 interface RightPanelProps {
   selectedBoard: { timelineId: string; turn: number } | null;
   boards: BoardEntry[];
-  pendingBranches: [string, unknown][];
   onBoardSelect: (addr: { timelineId: string; turn: number }) => void;
 }
 
 type Tab = 'info' | 'navigator';
 
-export function RightPanel({ selectedBoard, boards, pendingBranches, onBoardSelect }: RightPanelProps) {
+export function RightPanel({ selectedBoard, boards, onBoardSelect }: RightPanelProps) {
   const [tab, setTab] = useState<Tab>('info');
 
   const board = selectedBoard
@@ -28,12 +28,7 @@ export function RightPanel({ selectedBoard, boards, pendingBranches, onBoardSele
       )
     : null;
 
-  const pendingTimelineIds = new Set(
-    pendingBranches.map(([, pb]) => {
-      const p = pb as { originAddress?: { timeline?: string } };
-      return p.originAddress?.timeline ?? '';
-    }),
-  );
+  const pendingTimelineIds = new Set<string>();
 
   const maxTurn = Math.max(0, ...boards.map((b) => b.address.turn as number));
 
@@ -99,16 +94,16 @@ function InfoTab({
 
   const tl = board.address.timeline as string;
   const turn = board.address.turn as number;
-  const isGhost = !!(board.pluginData?.isPendingBranch);
-  const isPending = pendingTimelineIds.has(tl);
+  const isInStabilization = board.inStabilizationPeriod;
+  const isPending = isInStabilization;
 
   return (
     <div className="p-2 space-y-3">
       {/* Board identity */}
       <div className="flex items-center gap-2">
         <span className="font-mono text-white">{tl}:T{turn}</span>
-        {isGhost && <span className="text-yellow-400 text-[10px] bg-yellow-950 px-1 rounded">◈ Ghost</span>}
-        {isPending && !isGhost && <span className="text-yellow-600 text-[10px] bg-yellow-950 px-1 rounded">◈ Pending</span>}
+        {isInStabilization && <span className="text-yellow-400 text-[10px] bg-yellow-950 px-1 rounded">◈ Stabilizing</span>}
+
       </div>
 
       {/* Regions */}
@@ -187,7 +182,7 @@ function NavigatorTab({
             {boards.map((b) => {
               const turn = b.address.turn as number;
               const isSelected = selectedBoard?.timelineId === tl && selectedBoard?.turn === turn;
-              const isGhost = !!(b.pluginData?.isPendingBranch);
+              const isGhost = b.inStabilizationPeriod;
               const isActive = turn === maxTurn && !isGhost;
 
               let badge = <span className="text-gray-600 text-[9px]">past</span>;

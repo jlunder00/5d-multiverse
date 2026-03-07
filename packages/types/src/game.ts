@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Location, BoardAddress, RegionId } from './coordinates.js';
 import { Entity, EntityId, RegionState, Economy, PlayerId } from './entities.js';
 import { Action, ActionResult } from './actions.js';
-import { BranchId, PendingBranch } from './branch.js';
+import { BranchId } from './branch.js';
 import { WindowMode } from './window.js';
 import { AdjacencyMode, MovementMode, LooseModeConflictResolver } from './movement.js';
 import { EngineTools } from './engine-tools.js';
@@ -25,7 +25,6 @@ export interface Board {
 /** The complete multiverse state passed to plugin interfaces. */
 export interface WorldState {
   boards: Map<string, Board>; // keyed by boardKey(address)
-  pendingBranches: Map<BranchId, PendingBranch>;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,11 +134,12 @@ export interface IBranchTrigger {
  */
 export interface IArrivalPolicy {
   /**
-   * Returns the arrival actions for the given entities. The engine sequences
-   * and validates these against the current pending state.
+   * Returns the arrival actions for the given entities arriving on a
+   * newly-branched timeline. The engine sequences and validates these
+   * against the current stabilization-period board state.
    */
   getArrivalActions(
-    branch: PendingBranch,
+    branchId: BranchId,
     arrivingEntities: Entity[],
     context: ActionContext,
   ): Action[];
@@ -207,6 +207,18 @@ export interface IGameDefinition {
 
   minPlayers: number;
   maxPlayers: number;
+
+  /**
+   * Whether TL0's stabilization-period turns (1..n) become reachable for
+   * time travel after crystallization. Default: true (temporary instability).
+   */
+  tl0StabilizationReachable: boolean;
+
+  /**
+   * Whether branched-timeline stabilization-period turns become reachable
+   * after crystallization. Default: false (permanent instability).
+   */
+  branchStabilizationReachable: boolean;
 
   /** All configurable settings for this game. */
   settings: IGameSetting<unknown>[];

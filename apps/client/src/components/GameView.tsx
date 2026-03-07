@@ -79,10 +79,10 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   )];
 
   const activeTurn = data.globalTurn;
-  // Prefer TL0; fall back to first non-ghost timeline at the current turn
+  // Prefer TL0; fall back to first non-stabilization timeline at the current turn
   const activeTimeline = (() => {
     const atCurrentTurn = data.boards
-      .filter(b => (b.address.turn as number) === activeTurn && !b.pluginData?.isPendingBranch)
+      .filter(b => (b.address.turn as number) === activeTurn && !b.inStabilizationPeriod)
       .map(b => b.address.timeline as string);
     return atCurrentTurn.includes('TL0') ? 'TL0' : (atCurrentTurn[0] ?? 'TL0');
   })();
@@ -102,23 +102,12 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     return loc?.region ?? selectedPiece.fromRegion;
   })();
 
-  const pendingKeys = new Set(
-    data.pendingBranches.map(([, pb]) => {
-      const p = pb as { originAddress: { timeline: string; turn: number } };
-      return `${p.originAddress.timeline}:${p.originAddress.turn}`;
-    }),
-  );
-
   const cells: BoardCell[] = data.boards.map((b) => {
     const tl = b.address.timeline as string;
     const t = b.address.turn as number;
     const pieces = parseEntities(b.entities);
     const regions = parseRegions(b.regions);
-
-    const isGhost = !!(b.pluginData?.isPendingBranch);
-    const ghostOriginAddress = isGhost
-      ? (b.pluginData.originAddress as { timeline: string; turn: number })
-      : undefined;
+    const inStabilizationPeriod = b.inStabilizationPeriod ?? false;
 
     // Past boards are highlighted as time-travel targets when a piece is selected
     const isTimeTravelTarget = !!selectedPiece && t < activeTurn;
@@ -139,10 +128,8 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       timelineId: tl,
       turn: t,
       exists: true,
-      isPending: pendingKeys.has(`${tl}:${t}`),
-      isActive: t === activeTurn && !isGhost,
-      isGhost,
-      ...(ghostOriginAddress ? { ghostOriginAddress } : {}),
+      inStabilizationPeriod,
+      isActive: t === activeTurn && !inStabilizationPeriod,
       pieces,
       regions,
       ...(isTimeTravelTarget ? { isTimeTravelTarget: true } : {}),
@@ -152,9 +139,9 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   });
 
   function handlePieceClick(pieceId: string, cell: BoardCell) {
-    console.log('[pieceClick]', pieceId, 'isMyTurn:', isMyTurn, 'isGhost:', cell.isGhost, 'playerId:', playerId, 'activeTurn:', activeTurn);
+    console.log('[pieceClick]', pieceId, 'isMyTurn:', isMyTurn, 'inStabilization:', cell.inStabilizationPeriod, 'playerId:', playerId, 'activeTurn:', activeTurn);
     if (!isMyTurn) { console.log('[pieceClick] blocked: not my turn'); return; }
-    if (cell.isGhost) { console.log('[pieceClick] blocked: ghost board'); return; }
+    if (cell.inStabilizationPeriod) { console.log('[pieceClick] blocked: stabilization board'); return; }
     const piece = cell.pieces.find((p) => p.id === pieceId);
     console.log('[pieceClick] piece:', piece);
     if (!piece || piece.owner !== playerId) { console.log('[pieceClick] blocked: owner mismatch or not found', piece?.owner, '!==', playerId); return; }
@@ -162,7 +149,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
     // Normalize to the active board so actions always submit from the present.
     const activeBoard = data.boards.find(b =>
-      !b.pluginData?.isPendingBranch &&
+      !b.inStabilizationPeriod &&
       (b.address.turn as number) === activeTurn &&
       b.entities.some(([id]) => id === pieceId)
     );
@@ -187,7 +174,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
     // No piece selected yet: clicking a region containing your piece selects it.
     if (!selectedPiece) {
-      if (cell.isGhost) return;
+      if (cell.inStabilizationPeriod) return;
       const myPiece = cell.pieces.find((p) => p.owner === playerId && p.region === regionId);
       if (myPiece) handlePieceClick(myPiece.id, cell);
       return;
@@ -214,9 +201,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
         },
       });
     } else if (cell.turn < activeTurn) {
-      // Time travel — piece sent to a past board (ghost or historical)
-      const toTimeline = cell.ghostOriginAddress?.timeline ?? cell.timelineId;
-      const toTurn = cell.ghostOriginAddress?.turn ?? cell.turn;
+      // Time travel — direct addressing, no ghost board re-routing needed
       submitAction.mutate({
         gameId,
         boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: activeTurn },
@@ -226,7 +211,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
           player: playerId as any,
           entityId: selectedPiece.id as any,
           from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: fromRegion as any },
-          to: { timeline: toTimeline as any, turn: toTurn as any, region: regionId as any },
+          to: { timeline: cell.timelineId as any, turn: cell.turn as any, region: regionId as any },
           payload: {},
           submittedAt: Date.now(),
         },
@@ -240,7 +225,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
   function handlePass() {
     const activeBoard = data.boards.find(b =>
-      (b.address.turn as number) === activeTurn && !b.pluginData?.isPendingBranch
+      (b.address.turn as number) === activeTurn && !b.inStabilizationPeriod
     );
     if (!activeBoard) return;
     const tl = activeBoard.address.timeline as string;
@@ -267,6 +252,9 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     if (isMyTurn) return { text: 'Your turn — click one of your pieces to select it', color: 'text-green-400' };
     return { text: `Waiting for ${data.currentPlayer}…`, color: 'text-gray-500' };
   })();
+
+  // suppress unused warning — activeTimeline available for future use
+  void activeTimeline;
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 text-white">
@@ -318,7 +306,6 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
           <RightPanel
             selectedBoard={selectedBoard}
             boards={data.boards}
-            pendingBranches={data.pendingBranches}
             onBoardSelect={(addr) => setSelectedBoard(addr)}
           />
         </Panel>
