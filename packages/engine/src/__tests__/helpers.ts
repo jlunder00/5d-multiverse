@@ -161,6 +161,8 @@ export const testPlugin: IGameDefinition = {
   windowMode: 'n',
   defaultAdjacencyMode: 'strict',
   defaultMovementMode: 'staged',
+  tl0StabilizationReachable: true,
+  branchStabilizationReachable: false,
   minPlayers: 1,
   maxPlayers: 4,
   settings: [],
