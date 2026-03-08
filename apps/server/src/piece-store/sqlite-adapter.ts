@@ -117,10 +117,12 @@ export class SqlitePieceStore implements PieceStore {
   // ── Board queries ───────────────────────────────────────────────────────────
 
   getPiecesOnBoard(gameId: string, timeline: string, turn: number): PieceInfo[] {
-    const rows = this.db.prepare<[string, string, number], PresentRow>(
-      `SELECT * FROM present_positions
-       WHERE game_id = ? AND timeline = ? AND turn = ?
-       ORDER BY region, owner, type, disambiguator`
+    const rows = this.db.prepare<[string, string, number], PresentRow & { piece_data: string }>(
+      `SELECT pp.*, p.data AS piece_data
+       FROM present_positions pp
+       JOIN pieces p ON p.game_id = pp.game_id AND p.real_piece_id = pp.real_piece_id
+       WHERE pp.game_id = ? AND pp.timeline = ? AND pp.turn = ?
+       ORDER BY pp.region, pp.owner, pp.type, pp.disambiguator`
     ).all(gameId, timeline, turn);
 
     return rows.map(r => ({
@@ -129,7 +131,7 @@ export class SqlitePieceStore implements PieceStore {
       type: r.type as PieceInfo['type'],
       region: r.region as PieceInfo['region'],
       disambiguator: r.disambiguator,
-      data: this._pieceData(gameId, r.real_piece_id),
+      data: JSON.parse(r.piece_data) as Record<string, unknown>,
     }));
   }
 
@@ -422,6 +424,7 @@ export class SqlitePieceStore implements PieceStore {
     const row = this.db.prepare<[string, string], { data: string }>(
       `SELECT data FROM pieces WHERE game_id = ? AND real_piece_id = ?`
     ).get(gameId, realPieceId);
-    return row ? JSON.parse(row.data) as Record<string, unknown> : {};
+    if (!row) throw new Error(`_pieceData: piece "${realPieceId}" not found in game "${gameId}"`);
+    return JSON.parse(row.data) as Record<string, unknown>;
   }
 }
