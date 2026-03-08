@@ -1,6 +1,6 @@
 /**
- * SQL DDL for a per-game piece store SQLite database.
- * No game_id column — each game uses its own file (or its own in-memory DB).
+ * SQL DDL for the piece store. Tables use `game_id` as a partition key —
+ * multiple games share one DB file (or `:memory:` in tests).
  */
 export const PIECE_STORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS pieces (
