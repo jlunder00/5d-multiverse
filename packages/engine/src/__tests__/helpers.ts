@@ -15,14 +15,12 @@ import type {
   WorldState,
   Board,
   BoardAddress,
-  Entity,
   RegionState,
   Economy,
   Action,
   ActionResult,
   ActionContext,
   PlayerId,
-  EntityId,
   RegionId,
   TimelineId,
   Turn,
@@ -41,7 +39,9 @@ import { createMovementTools } from '../tools/movement.js';
 export const TL = (s: string) => s as TimelineId;
 export const T = (n: number) => n as Turn;
 export const P = (s: string) => s as PlayerId;
-export const EID = (s: string) => s as EntityId;
+/** Phase 1 bridge: EID returns a string used as a runtime entity key (not RealPieceId). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const EID = (s: string) => s as any;
 export const RID = (s: string) => s as RegionId;
 
 // ---------------------------------------------------------------------------
@@ -79,7 +79,8 @@ const actionValidator: IActionValidator = {
 
     if ((type as string) === 'move') {
       if (!entityId) return { valid: false, reason: 'move requires entityId' };
-      const entity = context.board.entities.get(entityId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = (context.board as any).entities?.get(entityId);
       if (!entity) return { valid: false, reason: 'entity not found on board' };
       if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
       if (from.timeline !== to.timeline || from.turn !== to.turn) {
@@ -94,7 +95,8 @@ const actionValidator: IActionValidator = {
 
     if ((type as string) === 'move_to_past') {
       if (!entityId) return { valid: false, reason: 'move_to_past requires entityId' };
-      const entity = context.board.entities.get(entityId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = (context.board as any).entities?.get(entityId);
       if (!entity) return { valid: false, reason: 'entity not found on board' };
       if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
       if ((to.turn as number) >= (from.turn as number)) {
@@ -116,9 +118,10 @@ const actionEvaluator: IActionEvaluator = {
     }
 
     if ((type as string) === 'move' && entityId) {
-      const entity = context.board.entities.get(entityId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = (context.board as any).entities?.get(entityId);
       if (!entity) return { actionId: action.id, success: false, error: 'entity not found', effects: [] };
-      const moved: Entity = { ...entity, location: { ...action.to } };
+      const moved = { ...entity, location: { ...action.to } };
       return {
         actionId: action.id,
         success: true,
@@ -179,7 +182,7 @@ export const testPlugin: IGameDefinition = {
   branchTrigger,
   arrivalPolicy,
   winCondition,
-  createInitialBoard(): Board { return makeBoard('TL0', 1); },
+  createInitialBoard(): Board { return makeBoard('TL0', 1) as Board; },
 };
 
 // ---------------------------------------------------------------------------
@@ -200,7 +203,8 @@ export function makeBoard(
   timeline: string,
   turn: number,
   opts: {
-    entities?: Entity[];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entities?: any[];   // Phase 1 bridge: runtime entity objects (not typed)
     isPending?: boolean;
     originAddress?: BoardAddress;
   } = {},
@@ -213,28 +217,35 @@ export function makeBoard(
       { id: id as RegionId, owner: null, data: {} },
     ]),
   );
-  const entities = new Map<EntityId, Entity>(
+  // Phase 1 bridge: keep runtime entities Map as untyped extra field.
+  // Board type has pieces: PieceInfo[], so we cast through any.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const entities = new Map<any, any>(
     (opts.entities ?? []).map((e) => [e.id, e]),
   );
   const pluginData: Record<string, unknown> = {};
 
-
-
-  return { address: { timeline: tl, turn: tr }, regions, entities, economies: new Map(), pluginData };
+  return {
+    address: { timeline: tl, turn: tr },
+    regions,
+    entities,
+    pieces: [],
+    economies: new Map(),
+    pluginData,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any as Board;
 }
 
-/** Create an entity at the given location. */
-export function makeEntity(
-  id: string,
-  owner: string,
-  timeline: string,
-  turn: number,
-  region: string,
-): Entity {
+/**
+ * Create a runtime entity object at the given location.
+ * Phase 1 bridge: returns plain object (not typed as Entity since Entity is removed).
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function makeEntity(id: string, owner: string, timeline: string, turn: number, region: string): any {
   return {
-    id: EID(id),
+    id,
     owner: P(owner),
-    type: 'piece' as any,
+    type: 'piece',
     location: { timeline: TL(timeline), turn: T(turn), region: RID(region) },
     data: {},
   };

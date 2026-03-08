@@ -17,7 +17,7 @@ import { getCurrentPlayer, advanceGlobalTurn } from './execution-order.js';
 import { openWindow, shouldClose, isHalfActionPending, markHalfActionUsed, computeHalfActionBoards } from './window-manager.js';
 import { createBranch, crystallizeBranch, findBranchByOrigin, isInStabilizationPeriod, isFormationWindowReachable } from './branch-tree.js';
 import { addParty } from './information-model.js';
-import { BranchTree, BranchNode, BranchWindow, Turn, TimelineId, EntityId } from '@5d/types';
+import { BranchTree, BranchNode, BranchWindow, Turn, TimelineId } from '@5d/types';
 
 export interface GameLoopState {
   world: WorldState;
@@ -54,6 +54,7 @@ function buildContext(
     tools,
     isHalfAction,
     halfActionBranchId,
+    pieceStore: undefined,
   };
 }
 
@@ -124,8 +125,10 @@ export function processAction(
   }
 
   // Capture moving entity BEFORE applyResultToWorld removes it from the source board
-  const movingEntity = action.entityId
-    ? getBoardAt(state.world, address)?.entities.get(action.entityId)
+  // Phase 1 bridge: runtime entities Map still lives on board as untyped field
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const movingEntity: any = action.entityId
+    ? (getBoardAt(state.world, address) as any)?.entities?.get(action.entityId)
     : undefined;
 
   const result: ActionResult = plugin.actionEvaluator.evaluate(action, context);
@@ -141,14 +144,16 @@ export function processAction(
     if (movingEntity) {
       const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
       if (destBoard) {
-        const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
-        const entities = new Map(destBoard.entities);
+        const arrivedId = `${movingEntity.id}-arr-${action.id}`;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const entities = new Map((destBoard as any).entities);
         entities.set(arrivedId, {
           ...movingEntity,
           id: arrivedId,
           location: { ...action.to },
         });
-        world = setBoard(world, addParty({ ...destBoard, entities }, player));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        world = setBoard(world, addParty({ ...destBoard, entities } as any as Board, player));
       }
     }
   } else if (result.success && plugin.branchTrigger.shouldBranch(action, result, context)) {
@@ -166,14 +171,16 @@ export function processAction(
         const destAddress = { timeline: existingBranchNode.timelineId, turn: stabilizationStartTurn };
         const destBoard = getBoardAt(world, destAddress);
         if (destBoard) {
-          const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
-          const entities = new Map(destBoard.entities);
+          const arrivedId = `${movingEntity.id}-arr-${action.id}`;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const entities = new Map((destBoard as any).entities);
           entities.set(arrivedId, {
             ...movingEntity,
             id: arrivedId,
             location: { timeline: existingBranchNode.timelineId, turn: stabilizationStartTurn, region: action.to.region },
           });
-          world = setBoard(world, addParty({ ...destBoard, entities }, player));
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          world = setBoard(world, addParty({ ...destBoard, entities } as any as Board, player));
         }
       }
     } else {
@@ -208,9 +215,10 @@ export function processAction(
       // copy and the arrived copy coexist). The arriving piece gets a new entity ID.
       const originBoard = getBoardAt(world, originAddress);
       if (originBoard) {
-        const entities = new Map(originBoard.entities);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const entities = new Map((originBoard as any).entities);
         if (movingEntity) {
-          const arrivedId = `${movingEntity.id}-arr-${action.id}` as EntityId;
+          const arrivedId = `${movingEntity.id}-arr-${action.id}`;
           entities.set(arrivedId, {
             ...movingEntity,
             id: arrivedId,
@@ -221,8 +229,10 @@ export function processAction(
           ...originBoard,
           address: { timeline: newTimelineId, turn: stabilizationStartTurn },
           entities,
+          pieces: [],
           pluginData: { ...originBoard.pluginData },
-        }, player));
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any as Board, player));
       }
 
       // Open sliding window (branchId = newTimelineId as string)
@@ -305,11 +315,20 @@ export function advanceAllTimelines(world: WorldState): WorldState {
   let result = world;
   for (const board of latestPerTimeline.values()) {
     const nextTurn = ((board.address.turn as number) + 1) as Turn;
+    // Phase 1 bridge: carry forward the runtime entities Map (untyped)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const prevEntities: Map<any, any> = (board as any).entities ?? new Map();
+    const nextEntities = new Map(
+      [...prevEntities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn: nextTurn } }]),
+    );
     result = setBoard(result, {
       ...board,
       address: { ...board.address, turn: nextTurn },
-      entities: new Map([...board.entities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn: nextTurn } }])),
-    });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      entities: nextEntities,
+      pieces: [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any as Board);
   }
   return result;
 }
