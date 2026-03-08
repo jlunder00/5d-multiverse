@@ -270,7 +270,7 @@ export class SqlitePieceStore implements PieceStore {
   // ── Turn lifecycle ─────────────────────────────────────────────────────────
 
   advanceAllTimelines(gameId: string, timelines: { timeline: string; fromTurn: number }[]): void {
-    const advance = this.db.transaction((tl: string, fromTurn: number) => {
+    const advanceOne = (tl: string, fromTurn: number) => {
       const nextTurn = fromTurn + 1;
 
       // 1. Write historical snapshots (compacted disambiguators)
@@ -319,11 +319,14 @@ export class SqlitePieceStore implements PieceStore {
       this.db.prepare(
         `DELETE FROM present_positions WHERE game_id = ? AND timeline = ? AND turn = ?`
       ).run(gameId, tl, fromTurn);
-    });
+    };
 
-    for (const { timeline, fromTurn } of timelines) {
-      advance(timeline, fromTurn);
-    }
+    const advanceAll = this.db.transaction(() => {
+      for (const { timeline, fromTurn } of timelines) {
+        advanceOne(timeline, fromTurn);
+      }
+    });
+    advanceAll();
   }
 
   createBranch(gameId: string, params: BranchCreationParams): void {
