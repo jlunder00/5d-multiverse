@@ -192,10 +192,11 @@ export class SqlitePieceStore implements PieceStore {
 
   movePiece(gameId: string, realPieceId: RealPieceId, newCoord: Partial<SpacetimeCoord>): void {
     if (newCoord.region !== undefined) {
-      this.db.prepare(
+      const r1 = this.db.prepare(
         `UPDATE present_positions SET region = ?
          WHERE game_id = ? AND real_piece_id = ?`
       ).run(newCoord.region, gameId, realPieceId);
+      if (r1.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not in present_positions`);
 
       this.db.prepare(
         `UPDATE piece_locations SET region = ?
@@ -203,15 +204,28 @@ export class SqlitePieceStore implements PieceStore {
       ).run(newCoord.region, gameId, realPieceId);
     }
     if (newCoord.timeline !== undefined) {
-      this.db.prepare(
+      const r2 = this.db.prepare(
         `UPDATE present_positions SET timeline = ?
          WHERE game_id = ? AND real_piece_id = ?`
       ).run(newCoord.timeline, gameId, realPieceId);
+      if (r2.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not in present_positions`);
 
       this.db.prepare(
         `UPDATE piece_locations SET timeline = ?
          WHERE game_id = ? AND real_piece_id = ?`
       ).run(newCoord.timeline, gameId, realPieceId);
+    }
+    if (newCoord.turn !== undefined) {
+      const r3 = this.db.prepare(
+        `UPDATE present_positions SET turn = ?
+         WHERE game_id = ? AND real_piece_id = ?`
+      ).run(newCoord.turn, gameId, realPieceId);
+      if (r3.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not in present_positions`);
+
+      this.db.prepare(
+        `UPDATE piece_locations SET turn = ?
+         WHERE game_id = ? AND real_piece_id = ?`
+      ).run(newCoord.turn, gameId, realPieceId);
     }
   }
 
