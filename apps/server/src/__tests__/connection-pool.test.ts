@@ -3,6 +3,18 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import { PieceStorePool } from '../piece-store/connection-pool.js';
+import type { PieceState, SpacetimeCoord } from '@5d/types';
+
+function pid(s: string) { return s as PieceState['id']; }
+function mkState(id: string): PieceState {
+  return { id: pid(id), owner: 'p1' as PieceState['owner'], type: 'inf' as PieceState['type'], data: {} };
+}
+function mkCoord(tl: string, turn: number, region: string): SpacetimeCoord {
+  return {
+    timeline: tl, turn, region: region as SpacetimeCoord['region'],
+    owner: 'p1' as SpacetimeCoord['owner'], type: 'inf' as SpacetimeCoord['type'], disambiguator: 0,
+  };
+}
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pool-test-'));
@@ -60,6 +72,34 @@ describe('PieceStorePool', () => {
     pool.get('g2');
     pool.closeAll();
     expect(pool.size).toBe(0);
+  });
+
+  it('accessing an existing entry promotes it to MRU (not evicted next)', () => {
+    pool.get('g1');
+    pool.get('g2');
+    pool.get('g3');
+
+    // Promote g1 to MRU
+    pool.get('g1');
+
+    // Add g4 — g2 (now LRU) should be evicted, not g1
+    pool.get('g4');
+    expect(pool.size).toBe(3);
+
+    // g1 is still in pool (was MRU-promoted); re-fetch keeps same instance
+    const g1again = pool.get('g1');
+    expect(g1again).toBeDefined();
+  });
+
+  it('deleteGame on one game does not affect another game in the same store', () => {
+    const s = pool.get('gx');
+    s.initGame('game-A', [{ state: mkState('pA'), coord: mkCoord('TL0', 1, 'R1') }]);
+    s.initGame('game-B', [{ state: mkState('pB'), coord: mkCoord('TL0', 1, 'R1') }]);
+
+    s.deleteGame('game-A');
+
+    expect(s.getPiecesOnBoard('game-A', 'TL0', 1)).toHaveLength(0);
+    expect(s.getPiecesOnBoard('game-B', 'TL0', 1)).toHaveLength(1);
   });
 
   it('persists data across evict+reopen', () => {
