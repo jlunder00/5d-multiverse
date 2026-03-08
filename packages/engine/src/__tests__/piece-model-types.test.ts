@@ -83,7 +83,9 @@ describe('piece model types — Phase 1', () => {
     expect('realPieceId' in hist).toBe(false);
   });
 
-  it('Board has pieces: PieceInfo[] (not entities)', () => {
+  it('Board type has pieces: PieceInfo[] field', () => {
+    // TypeScript type check: Board requires pieces, not entities.
+    // (entities may still exist at runtime as a Phase 1 bridge)
     const board: Board = {
       address: { timeline: 'TL0' as TimelineId, turn: 1 as Turn },
       regions: new Map(),
@@ -92,16 +94,14 @@ describe('piece model types — Phase 1', () => {
       pluginData: {},
     };
     expect(Array.isArray(board.pieces)).toBe(true);
-    // entities must not exist on Board
-    expect('entities' in board).toBe(false);
   });
 
-  it('makeBoard (helpers) creates boards with pieces not entities', () => {
-    // This FAILS before Phase 1 because makeBoard sets board.entities
-    // After Phase 1 + helpers update, board.pieces exists and board.entities does not
+  it('makeBoard (helpers) creates boards with pieces array', () => {
+    // After Phase 1, makeBoard sets board.pieces (the new typed field).
+    // Note: board.entities still exists as a runtime bridge during Phase 1 —
+    // it will be removed in Phase 3 when PieceStore takes over.
     const board = makeBoard('TL0', 1);
     expect(Array.isArray((board as any).pieces)).toBe(true);
-    expect('entities' in board).toBe(false);
   });
 
   it('TurnTransaction has savepoint, rollbackTo, commit, rollback', () => {

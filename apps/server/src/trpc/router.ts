@@ -182,7 +182,8 @@ export const appRouter = router({
           key,
           address: board.address,
           regions: [...board.regions.entries()],
-          entities: [...board.entities.entries()],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          entities: [...((board as any).entities?.entries() ?? [])],
           economies: [...board.economies.entries()],
           pluginData: board.pluginData,
           inStabilizationPeriod: state.branchTree.nodes[board.address.timeline as string]?.inStabilizationPeriod ?? false,

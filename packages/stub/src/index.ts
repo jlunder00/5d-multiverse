@@ -11,11 +11,9 @@ import {
   Board,
   BoardAddress,
   RegionState,
-  Entity,
   Economy,
   PlayerId,
   RegionId,
-  EntityId,
   ActionResult,
   Action,
   ActionContext,
@@ -88,7 +86,9 @@ const actionValidator: IActionValidator = {
     if (type === ('move' as typeof type)) {
       if (!entityId) return { valid: false, reason: 'move requires entityId' };
 
-      const entity = context.board.entities.get(entityId);
+      // Phase 1 bridge: runtime entities Map lives on board as untyped field
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = (context.board as any).entities?.get(entityId);
       if (!entity) return { valid: false, reason: 'entity not found' };
       if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
       if (from.timeline !== to.timeline || from.turn !== to.turn) {
@@ -104,7 +104,8 @@ const actionValidator: IActionValidator = {
 
     if (type === ('move_to_past' as typeof type)) {
       if (!entityId) return { valid: false, reason: 'move_to_past requires entityId' };
-      const entity = context.board.entities.get(entityId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = (context.board as any).entities?.get(entityId);
       if (!entity) return { valid: false, reason: 'entity not found' };
       if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
       if (to.turn >= from.turn) return { valid: false, reason: 'destination must be a past turn' };
@@ -128,10 +129,11 @@ const actionEvaluator: IActionEvaluator = {
     }
 
     if (type === ('move' as typeof type) && entityId) {
-      const entity = context.board.entities.get(entityId);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = (context.board as any).entities?.get(entityId);
       if (!entity) return { actionId: action.id, success: false, error: 'entity not found', effects: [] };
 
-      const moved: Entity = { ...entity, location: { ...action.to } };
+      const moved = { ...entity, location: { ...action.to } };
       return {
         actionId: action.id,
         success: true,
@@ -193,14 +195,16 @@ function createInitialBoard(players: PlayerId[]): Board {
     REGIONS.map((id) => [id, { id, owner: null, data: { label: id as string } }]),
   );
 
-  const entities = new Map<EntityId, Entity>();
+  // Phase 1 bridge: entities Map kept at runtime as untyped field;
+  // Board.pieces is the typed field (empty until Phase 3 populates from PieceStore).
+  const entities = new Map<string, unknown>();
   players.forEach((player, i) => {
     const startRegion = START_REGIONS[i % START_REGIONS.length]!;
-    const entityId = `piece-${player}` as EntityId;
+    const entityId = `piece-${player}`;
     entities.set(entityId, {
       id: entityId,
       owner: player,
-      type: 'piece' as any,
+      type: 'piece',
       location: { timeline, turn, region: startRegion },
       data: { label: `${player}'s piece` },
     });
@@ -213,10 +217,13 @@ function createInitialBoard(players: PlayerId[]): Board {
   return {
     address: { timeline, turn },
     regions,
-    entities,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    entities: entities as any,
+    pieces: [],
     economies,
     pluginData: {},
-  };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any as Board;
 }
 
 // ---------------------------------------------------------------------------

@@ -3,8 +3,6 @@ import {
   Board,
   BoardAddress,
   ActionResult,
-  Entity,
-  EntityId,
   RegionId,
   RegionState,
   PlayerId,
@@ -37,7 +35,10 @@ export function setBoard(world: WorldState, board: Board): WorldState {
 export function applyActionResult(board: Board, result: ActionResult): Board {
   if (!result.success) return board;
 
-  let entities = new Map(board.entities);
+  // Phase 1 bridge: entity_upsert/entity_remove still operate on the runtime
+  // `entities` Map (not in the Board type). Phase 3 will remove this logic.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let entities: Map<any, any> = new Map((board as any).entities);
   let regions = new Map(board.regions);
   let economies = new Map(board.economies);
   let pluginData = { ...board.pluginData };
@@ -46,11 +47,12 @@ export function applyActionResult(board: Board, result: ActionResult): Board {
     const type = effect['type'] as string | undefined;
 
     if (type === 'entity_upsert') {
-      const entity = effect['entity'] as Entity;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const entity = effect['entity'] as any;
       entities = new Map(entities);
       entities.set(entity.id, entity);
     } else if (type === 'entity_remove') {
-      const entityId = effect['entityId'] as EntityId;
+      const entityId = effect['entityId'] as string;
       entities = new Map(entities);
       entities.delete(entityId);
     } else if (type === 'region_update') {
@@ -67,7 +69,8 @@ export function applyActionResult(board: Board, result: ActionResult): Board {
     }
   }
 
-  return { ...board, entities, regions, economies, pluginData };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return { ...board, entities, regions, economies, pluginData } as any as Board;
 }
 
 /**

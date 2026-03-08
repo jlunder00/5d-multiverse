@@ -1,5 +1,6 @@
 export * from './coordinates.js';
 export * from './entities.js';
+export * from './piece-store.js';
 export * from './actions.js';
 export * from './branch.js';
 export * from './window.js';
