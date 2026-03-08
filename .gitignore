@@ -6,3 +6,4 @@ data.db
 docs/plans/
 apps/server/data.db-wal
 apps/server/data.db-shm
+.turbo/
