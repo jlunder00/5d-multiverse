@@ -323,6 +323,19 @@ export class SqlitePieceStore implements PieceStore {
          ORDER BY region, owner, type, disambiguator`
       ).all(gameId, originTimeline, originTurn);
 
+      // Precondition guards
+      const travelerState = this.getPieceState(gameId, travelerId);
+      if (!travelerState) throw new Error(`createBranch: travelerId "${travelerId}" not in pieces table`);
+
+      const sourceLoc = this.db.prepare<[string, string], LocationRow>(
+        `SELECT * FROM piece_locations WHERE game_id = ? AND real_piece_id = ?`
+      ).get(gameId, travelerId);
+      if (!sourceLoc) throw new Error(`createBranch: no piece_locations entry for "${travelerId}"`);
+
+      if (snapshots.length === 0) {
+        throw new Error(`createBranch: no historical snapshot at (${originTimeline}, ${originTurn})`);
+      }
+
       // 2. Bootstrap new timeline: mint new RealPieceIds for each snapshot piece
       //    except the traveler (which keeps its own ID)
       const insertPiece = this.db.prepare(
@@ -340,17 +353,12 @@ export class SqlitePieceStore implements PieceStore {
          VALUES (?, ?, ?, ?, ?, ?)`
       );
 
-      // Capture traveler's current source location BEFORE any mutations
-      const travelerState = this.getPieceState(gameId, travelerId);
-      const sourceLoc = this.db.prepare<[string, string], LocationRow>(
-        `SELECT * FROM piece_locations WHERE game_id = ? AND real_piece_id = ?`
-      ).get(gameId, travelerId);
+      let travelerPlaced = false;
 
       for (const snap of snapshots) {
         // Match snapshot row to traveler slot by (region, owner, type, disambiguator)
         // using the source location captured before any writes.
-        const isTravelerSlot = travelerState &&
-          sourceLoc &&
+        const isTravelerSlot =
           snap.region === sourceLoc.region &&
           snap.owner === travelerState.owner &&
           snap.type === travelerState.type &&
@@ -366,6 +374,7 @@ export class SqlitePieceStore implements PieceStore {
             gameId, travelerId, newTimelineId, originTurn,
             travelerDestRegion, snap.disambiguator,
           );
+          travelerPlaced = true;
         } else {
           // Bootstrap: mint a new RealPieceId for this historical piece
           const newId = randomUUID() as RealPieceId;
@@ -380,13 +389,15 @@ export class SqlitePieceStore implements PieceStore {
         }
       }
 
-      // 3. Remove traveler from its SOURCE board only (not from the new timeline)
-      if (sourceLoc) {
-        this.db.prepare(
-          `DELETE FROM present_positions
-           WHERE game_id = ? AND real_piece_id = ? AND timeline = ? AND turn = ?`
-        ).run(gameId, travelerId, sourceLoc.timeline, sourceLoc.turn);
+      if (!travelerPlaced) {
+        throw new Error('createBranch: traveler slot not found in snapshot');
       }
+
+      // 3. Remove traveler from its SOURCE board only (not from the new timeline)
+      this.db.prepare(
+        `DELETE FROM present_positions
+         WHERE game_id = ? AND real_piece_id = ? AND timeline = ? AND turn = ?`
+      ).run(gameId, travelerId, sourceLoc.timeline, sourceLoc.turn);
       // piece_locations for the traveler was already updated by insertLocation above
     });
 
