@@ -1,0 +1,399 @@
+/**
+ * Integration tests for SqlitePieceStore.
+ *
+ * Each test uses an in-memory SQLite DB (no file I/O).
+ * Tests run the full PieceStore interface: init, query, mutate,
+ * advance timelines, create branch, undo via savepoint, delete.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { PieceState, SpacetimeCoord, PieceInfo } from '@5d/types';
+import { SqlitePieceStore } from '../piece-store/sqlite-adapter.js';
+
+// Helpers
+function pid(s: string) { return s as PieceState['id']; }
+function owner(s: string) { return s as PieceState['owner']; }
+function unitType(s: string) { return s as PieceState['type']; }
+function regionId(s: string) { return s as SpacetimeCoord['region']; }
+
+function makeState(id: string, o = 'player1', t = 'infantry'): PieceState {
+  return { id: pid(id), owner: owner(o), type: unitType(t), data: {} };
+}
+
+function makeCoord(
+  timeline: string,
+  turn: number,
+  region: string,
+  o = 'player1',
+  t = 'infantry',
+  disambiguator = 0,
+): SpacetimeCoord {
+  return {
+    timeline,
+    turn,
+    region: regionId(region),
+    owner: owner(o),
+    type: unitType(t),
+    disambiguator,
+  };
+}
+
+const GAME = 'game-test';
+
+describe('SqlitePieceStore', () => {
+  let store: SqlitePieceStore;
+
+  beforeEach(() => {
+    // In-memory DB — no file cleanup needed
+    store = new SqlitePieceStore(':memory:');
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  // ── initGame ───────────────────────────────────────────────────────────────
+
+  describe('initGame', () => {
+    it('initialises a game with pieces visible on the starting board', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL0', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+
+      const pieces = store.getPiecesOnBoard(GAME, 'TL0', 1);
+      expect(pieces).toHaveLength(2);
+
+      const p1 = pieces.find(p => p.realPieceId === 'p1');
+      expect(p1).toBeDefined();
+      expect(p1!.owner).toBe('player1');
+      expect(p1!.type).toBe('infantry');
+      expect(p1!.region).toBe('R1');
+      expect(p1!.disambiguator).toBe(0);
+    });
+
+    it('registers piece locations so getPieceLocation works', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const loc = store.getPieceLocation(GAME, pid('p1'));
+      expect(loc).toBeDefined();
+      expect(loc!.timeline).toBe('TL0');
+      expect(loc!.turn).toBe(1);
+      expect(loc!.region).toBe('R1');
+    });
+
+    it('returns empty array for board with no pieces', () => {
+      store.initGame(GAME, []);
+      const pieces = store.getPiecesOnBoard(GAME, 'TL0', 1);
+      expect(pieces).toHaveLength(0);
+    });
+  });
+
+  // ── getPieceState ──────────────────────────────────────────────────────────
+
+  describe('getPieceState', () => {
+    it('returns the piece state by realPieceId', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const state = store.getPieceState(GAME, pid('p1'));
+      expect(state).toBeDefined();
+      expect(state!.id).toBe('p1');
+      expect(state!.owner).toBe('player1');
+      expect(state!.type).toBe('infantry');
+      expect(state!.data).toEqual({});
+    });
+
+    it('returns undefined for unknown piece', () => {
+      store.initGame(GAME, []);
+      expect(store.getPieceState(GAME, pid('unknown'))).toBeUndefined();
+    });
+  });
+
+  // ── movePiece ──────────────────────────────────────────────────────────────
+
+  describe('movePiece', () => {
+    it('moves a piece to a new region within the same board', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const tx = store.beginTurn(GAME);
+      store.movePiece(GAME, pid('p1'), { region: regionId('R2') });
+      tx.commit();
+
+      const loc = store.getPieceLocation(GAME, pid('p1'));
+      expect(loc!.region).toBe('R2');
+
+      const pieces = store.getPiecesOnBoard(GAME, 'TL0', 1);
+      const p1 = pieces.find(p => p.realPieceId === 'p1');
+      expect(p1!.region).toBe('R2');
+    });
+  });
+
+  // ── updatePieceData ────────────────────────────────────────────────────────
+
+  describe('updatePieceData', () => {
+    it('merges data into the piece state', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const tx = store.beginTurn(GAME);
+      store.updatePieceData(GAME, pid('p1'), { movesUsed: 1, hp: 3 });
+      tx.commit();
+
+      const state = store.getPieceState(GAME, pid('p1'));
+      expect(state!.data).toEqual({ movesUsed: 1, hp: 3 });
+    });
+  });
+
+  // ── removePiece ────────────────────────────────────────────────────────────
+
+  describe('removePiece', () => {
+    it('removes a piece from the board and piece_locations', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const tx = store.beginTurn(GAME);
+      store.removePiece(GAME, pid('p1'));
+      tx.commit();
+
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 1)).toHaveLength(0);
+      expect(store.getPieceLocation(GAME, pid('p1'))).toBeUndefined();
+    });
+  });
+
+  // ── addPiece ───────────────────────────────────────────────────────────────
+
+  describe('addPiece', () => {
+    it('adds a new piece onto a board mid-turn', () => {
+      store.initGame(GAME, []);
+
+      const tx = store.beginTurn(GAME);
+      store.addPiece(
+        GAME,
+        makeState('p_new', 'player2', 'cannon'),
+        makeCoord('TL0', 1, 'R3', 'player2', 'cannon'),
+      );
+      tx.commit();
+
+      const pieces = store.getPiecesOnBoard(GAME, 'TL0', 1);
+      expect(pieces).toHaveLength(1);
+      expect(pieces[0].realPieceId).toBe('p_new');
+      expect(pieces[0].type).toBe('cannon');
+    });
+  });
+
+  // ── Undo via savepoint ─────────────────────────────────────────────────────
+
+  describe('savepoint / rollback undo', () => {
+    it('rolling back a savepoint reverses a move', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const tx = store.beginTurn(GAME);
+      tx.savepoint('a1');
+      store.movePiece(GAME, pid('p1'), { region: regionId('R2') });
+
+      // Before rollback: piece is at R2
+      expect(store.getPieceLocation(GAME, pid('p1'))!.region).toBe('R2');
+
+      tx.rollbackTo('a1');
+
+      // After rollback: piece is back at R1
+      expect(store.getPieceLocation(GAME, pid('p1'))!.region).toBe('R1');
+      tx.commit();
+    });
+
+    it('rolling back does not undo prior committed savepoints', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL0', 1, 'R4', 'player2', 'cavalry') },
+      ]);
+
+      const tx = store.beginTurn(GAME);
+
+      // Action 1: move p1 to R2
+      tx.savepoint('a1');
+      store.movePiece(GAME, pid('p1'), { region: regionId('R2') });
+
+      // Action 2: move p2 to R5
+      tx.savepoint('a2');
+      store.movePiece(GAME, pid('p2'), { region: regionId('R5') });
+
+      // Undo action 2 only
+      tx.rollbackTo('a2');
+      expect(store.getPieceLocation(GAME, pid('p2'))!.region).toBe('R4');
+      // p1's move remains
+      expect(store.getPieceLocation(GAME, pid('p1'))!.region).toBe('R2');
+
+      tx.commit();
+    });
+
+    it('rolling back outer transaction reverses all mutations', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      const tx = store.beginTurn(GAME);
+      store.movePiece(GAME, pid('p1'), { region: regionId('R9') });
+      tx.rollback();
+
+      expect(store.getPieceLocation(GAME, pid('p1'))!.region).toBe('R1');
+    });
+  });
+
+  // ── advanceAllTimelines ────────────────────────────────────────────────────
+
+  describe('advanceAllTimelines', () => {
+    it('writes historical snapshots and bumps turn for all timelines', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL0', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      // New present board is at turn 2
+      const present = store.getPiecesOnBoard(GAME, 'TL0', 2);
+      expect(present).toHaveLength(2);
+
+      // Historical snapshot preserved for turn 1
+      const historical = store.getHistoricalPieces(GAME, 'TL0', 1);
+      expect(historical).toHaveLength(2);
+
+      // piece_locations updated to turn 2
+      const loc = store.getPieceLocation(GAME, pid('p1'));
+      expect(loc!.turn).toBe(2);
+    });
+
+    it('disambiguators are compacted on advance', () => {
+      // Two pieces same (tl, turn, region, owner, type) → disambiguators 0 and 1
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1', 'player1', 'infantry', 0) },
+        { state: makeState('p2'), coord: makeCoord('TL0', 1, 'R1', 'player1', 'infantry', 1) },
+      ]);
+
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      const present = store.getPiecesOnBoard(GAME, 'TL0', 2);
+      expect(present).toHaveLength(2);
+      const disambiguators = present.map(p => p.disambiguator).sort();
+      expect(disambiguators).toEqual([0, 1]);
+    });
+  });
+
+  // ── createBranch ──────────────────────────────────────────────────────────
+
+  describe('createBranch', () => {
+    it('bootstraps a new timeline from historical snapshots', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL0', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+
+      // Advance so there's a historical snapshot at turn 1
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      // p1 travels back to TL0 turn 1, branching into TL1
+      store.createBranch(GAME, {
+        originTimeline: 'TL0',
+        originTurn: 1,
+        newTimelineId: 'TL1',
+        travelerId: pid('p1'),
+        travelerDestRegion: regionId('R3'),
+      });
+
+      // New timeline should have bootstrapped copies of TL0 turn 1 pieces
+      // plus the traveler placed in R3
+      const newBoard = store.getPiecesOnBoard(GAME, 'TL1', 1);
+      // p1 (traveler) is in R3; p2's copy is in R2 (bootstrapped)
+      expect(newBoard).toHaveLength(2);
+
+      const traveler = newBoard.find(p => p.realPieceId === 'p1');
+      expect(traveler).toBeDefined();
+      expect(traveler!.region).toBe('R3');
+
+      // Bootstrapped copy of p2 has a NEW realPieceId (not 'p2')
+      const copy = newBoard.find(p => p.realPieceId !== 'p1');
+      expect(copy).toBeDefined();
+      expect(copy!.realPieceId).not.toBe('p2');
+      expect(copy!.type).toBe('cavalry');
+      expect(copy!.region).toBe('R2');
+    });
+
+    it('traveler keeps its original realPieceId on the new timeline', () => {
+      store.initGame(GAME, [
+        { state: makeState('traveler'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      store.createBranch(GAME, {
+        originTimeline: 'TL0',
+        originTurn: 1,
+        newTimelineId: 'TL1',
+        travelerId: pid('traveler'),
+        travelerDestRegion: regionId('R5'),
+      });
+
+      const newBoard = store.getPiecesOnBoard(GAME, 'TL1', 1);
+      expect(newBoard.some(p => p.realPieceId === 'traveler')).toBe(true);
+    });
+
+    it('traveler is removed from source board after branch creation', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL0', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      store.createBranch(GAME, {
+        originTimeline: 'TL0',
+        originTurn: 1,
+        newTimelineId: 'TL1',
+        travelerId: pid('p1'),
+        travelerDestRegion: regionId('R3'),
+      });
+
+      // p1 should no longer be on TL0 turn 2 (it left)
+      const sourcePieces = store.getPiecesOnBoard(GAME, 'TL0', 2);
+      expect(sourcePieces.find(p => p.realPieceId === 'p1')).toBeUndefined();
+    });
+  });
+
+  // ── deleteGame ─────────────────────────────────────────────────────────────
+
+  describe('deleteGame', () => {
+    it('removes all data for the game', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      store.deleteGame(GAME);
+
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 1)).toHaveLength(0);
+      expect(store.getPieceLocation(GAME, pid('p1'))).toBeUndefined();
+    });
+  });
+
+  // ── multiple games isolation ────────────────────────────────────────────────
+
+  describe('multi-game isolation', () => {
+    it('pieces from different games do not bleed across', () => {
+      store.initGame('game-A', [
+        { state: makeState('pA'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+      store.initGame('game-B', [
+        { state: makeState('pB'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+
+      expect(store.getPiecesOnBoard('game-A', 'TL0', 1).map(p => p.realPieceId)).toEqual(['pA']);
+      expect(store.getPiecesOnBoard('game-B', 'TL0', 1).map(p => p.realPieceId)).toEqual(['pB']);
+    });
+  });
+});
