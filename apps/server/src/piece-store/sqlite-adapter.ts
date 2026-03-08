@@ -57,7 +57,7 @@ interface LocationRow {
 
 class SqliteTurnTransaction implements TurnTransaction {
   private readonly db: Database.Database;
-  private committed = false;
+  private state: 'open' | 'committed' | 'rolledBack' = 'open';
 
   constructor(db: Database.Database) {
     this.db = db;
@@ -65,25 +65,29 @@ class SqliteTurnTransaction implements TurnTransaction {
   }
 
   savepoint(name: string): void {
+    if (!/^\w+$/.test(name)) throw new Error(`Invalid savepoint name: "${name}"`);
     this.db.prepare(`SAVEPOINT "${name}"`).run();
   }
 
   rollbackTo(name: string): void {
+    if (!/^\w+$/.test(name)) throw new Error(`Invalid savepoint name: "${name}"`);
     this.db.prepare(`ROLLBACK TO SAVEPOINT "${name}"`).run();
   }
 
   commit(): void {
-    if (!this.committed) {
-      this.db.prepare('COMMIT').run();
-      this.committed = true;
-    }
+    if (this.state !== 'open') throw new Error(`TurnTransaction.commit(): transaction already ${this.state}`);
+    this.db.prepare('COMMIT').run();
+    this.state = 'committed';
   }
 
   rollback(): void {
-    if (!this.committed) {
-      this.db.prepare('ROLLBACK').run();
-      this.committed = true;
-    }
+    if (this.state !== 'open') throw new Error(`TurnTransaction.rollback(): transaction already ${this.state}`);
+    this.db.prepare('ROLLBACK').run();
+    this.state = 'rolledBack';
+  }
+
+  [Symbol.dispose](): void {
+    if (this.state === 'open') this.rollback();
   }
 }
 
