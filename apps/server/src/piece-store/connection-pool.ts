@@ -42,7 +42,15 @@ export class PieceStorePool {
     }
 
     const dbPath = this._dbPath(gameId);
-    const store = new SqlitePieceStore(dbPath);
+    let store: SqlitePieceStore;
+    try {
+      store = new SqlitePieceStore(dbPath);
+    } catch (err) {
+      throw new Error(
+        `PieceStorePool.get("${gameId}"): failed to open "${dbPath}": ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
     this.pool.set(gameId, store);
     return store;
   }
@@ -61,12 +69,15 @@ export class PieceStorePool {
 
   /**
    * Closes and removes all stores. Call on server shutdown.
+   * Logs errors but continues closing remaining stores if one fails.
    */
   closeAll(): void {
-    for (const store of this.pool.values()) {
-      store.close();
+    const errors: { gameId: string; err: unknown }[] = [];
+    for (const [gameId, store] of this.pool.entries()) {
+      try { store.close(); } catch (err) { errors.push({ gameId, err }); }
     }
     this.pool.clear();
+    if (errors.length > 0) console.error('PieceStorePool.closeAll(): errors:', errors);
   }
 
   /** Absolute path for the given game's DB file. */

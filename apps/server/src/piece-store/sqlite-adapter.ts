@@ -105,9 +105,17 @@ export class SqlitePieceStore implements PieceStore {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    this.db.exec(PIECE_STORE_SCHEMA);
+    try {
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('foreign_keys = ON');
+      this.db.exec(PIECE_STORE_SCHEMA);
+    } catch (err) {
+      this.db.close();
+      throw new Error(
+        `SqlitePieceStore: failed to init "${dbPath}": ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
   }
 
   close(): void {
