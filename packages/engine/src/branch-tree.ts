@@ -5,6 +5,7 @@ import {
   TimelineId,
   BoardAddress,
   Turn,
+  IGameDefinition,
 } from '@5d/types';
 
 export function createRootTimeline(rootTimelineId: TimelineId): BranchTree {
@@ -86,6 +87,51 @@ export function isInStabilizationPeriod(
 ): boolean {
   const node = tree.nodes[timelineId];
   return node?.inStabilizationPeriod ?? false;
+}
+
+/**
+ * Returns true if the given turn on the given timeline is reachable for time travel.
+ *
+ * Formation-window turns are those that existed during the timeline's stabilization
+ * period. For a branch, these are turns (divergedAtTurn+1)..(divergedAtTurn+stabilizationPeriodTurns).
+ * For TL0 (no parent), these are turns 1..stabilizationPeriodTurns.
+ *
+ * Whether formation-window turns are reachable after crystallization is controlled
+ * by plugin settings: `tl0StabilizationReachable` (for TL0) and
+ * `branchStabilizationReachable` (for all other timelines).
+ *
+ * Returns false if the timeline is still in its stabilization period (not yet traversable).
+ * Returns true for any turn outside the formation window.
+ */
+export function isFormationWindowReachable(
+  tree: BranchTree,
+  timelineId: TimelineId,
+  turn: Turn,
+  plugin: Pick<IGameDefinition, 'tl0StabilizationReachable' | 'branchStabilizationReachable'>,
+): boolean {
+  const node = tree.nodes[timelineId];
+  if (!node) return true; // unknown timeline — let engine/plugin handle separately
+  if (node.inStabilizationPeriod) return false; // still stabilizing
+
+  const isRoot = node.parentTimelineId === null;
+  // Formation window starts at divergedAtTurn (the origin board, copied at branch creation)
+  // because that board was also created during the unstable formation period.
+  // Root has no divergedAtTurn so its window starts at T1.
+  const formationStart = isRoot ? 1 : (node.divergedAtTurn as number);
+  // Formation window is exactly stabilizationPeriodTurns wide:
+  //   root:   T1 .. stabilizationPeriodTurns
+  //   branch: divergedAtTurn .. divergedAtTurn + stabilizationPeriodTurns - 1
+  // advanceAllTimelines fires AFTER crystallizeDueWindows on the closing turn, so the last
+  // advance produces the first post-crystallization board (outside the window).
+  const formationEnd = isRoot
+    ? formationStart + node.stabilizationPeriodTurns - 1
+    : (node.divergedAtTurn as number) + node.stabilizationPeriodTurns - 1;
+
+  if ((turn as number) < formationStart || (turn as number) > formationEnd) {
+    return true; // outside formation window — always reachable
+  }
+
+  return isRoot ? plugin.tl0StabilizationReachable : plugin.branchStabilizationReachable;
 }
 
 /**

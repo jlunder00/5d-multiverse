@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { LocationSchema } from './coordinates.js';
-import { EntityIdSchema, PlayerIdSchema } from './entities.js';
+import { RealPieceIdSchema, PlayerIdSchema } from './entities.js';
 
 export const ActionTypeSchema = z.string().brand<'ActionType'>();
 export type ActionType = z.infer<typeof ActionTypeSchema>;
@@ -24,8 +24,8 @@ export const ActionSchema = z.object({
   from: LocationSchema,
   /** Where it is going (may be same location for in-place actions). */
   to: LocationSchema,
-  /** The entity performing the action, if applicable. */
-  entityId: EntityIdSchema.optional(),
+  /** The piece performing the action, if applicable. */
+  entityId: RealPieceIdSchema.optional(),
   /** Game-specific payload (dice result, build type, resource exchange...). */
   payload: z.record(z.string(), z.unknown()),
   /** Wall-clock timestamp of submission. */

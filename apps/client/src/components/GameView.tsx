@@ -79,6 +79,18 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   )];
 
   const activeTurn = data.globalTurn;
+
+  // Per-timeline present: max non-stabilization turn for each timeline.
+  // This is the "present" of that timeline — where pieces can be selected and acted on.
+  const timelinePresents = new Map<string, number>();
+  for (const b of data.boards) {
+    if (!b.inStabilizationPeriod) {
+      const tl = b.address.timeline as string;
+      const t = b.address.turn as number;
+      timelinePresents.set(tl, Math.max(timelinePresents.get(tl) ?? 0, t));
+    }
+  }
+
   // Prefer TL0; fall back to first non-stabilization timeline at the current turn
   const activeTimeline = (() => {
     const atCurrentTurn = data.boards
@@ -87,7 +99,31 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     return atCurrentTurn.includes('TL0') ? 'TL0' : (atCurrentTurn[0] ?? 'TL0');
   })();
 
-  const timelines = [...new Set(data.boards.map((b) => b.address.timeline as string))].sort();
+  // DFS order: newest child immediately below its parent, older siblings pushed further down.
+  // Guarantees connecting lines from parent to newest child never cross sibling branch lines.
+  const timelines = (() => {
+    const info = data.branchInfo ?? [];
+    const childrenOf = new Map<string, string[]>();
+    let root: string | undefined;
+    for (const b of info) {
+      if (!b.parentTimelineId) { root = b.timelineId; }
+      else {
+        const list = childrenOf.get(b.parentTimelineId) ?? [];
+        list.push(b.timelineId);
+        childrenOf.set(b.parentTimelineId, list);
+      }
+    }
+    if (!root) return [...new Set(data.boards.map((b) => b.address.timeline as string))].sort();
+    const result: string[] = [];
+    function dfs(id: string) {
+      result.push(id);
+      const children = childrenOf.get(id) ?? [];
+      // Newest child first (server appends in creation order, so reverse = newest first)
+      for (let i = children.length - 1; i >= 0; i--) dfs(children[i]!);
+    }
+    dfs(root);
+    return result;
+  })();
   const maxTurn = Math.max(activeTurn, ...data.boards.map((b) => b.address.turn as number));
 
   // Read piece's current region fresh from server data to avoid stale closure
@@ -109,8 +145,13 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     const regions = parseRegions(b.regions);
     const inStabilizationPeriod = b.inStabilizationPeriod ?? false;
 
-    // Past boards are highlighted as time-travel targets when a piece is selected
-    const isTimeTravelTarget = !!selectedPiece && t < activeTurn;
+    // Time-travel targets: same timeline, past turn (pure temporal move).
+    // Valid moves require either same timeline OR same turn number — never both different
+    // (different timeline + different turn = temporal+lateral, disallowed).
+    // Stabilizing boards are a special case handled separately by the engine.
+    const isTimeTravelTarget = !!selectedPiece &&
+      tl === selectedPiece.fromBoard.timelineId &&
+      t < selectedPiece.fromBoard.turn;
 
     // Legal move regions: spatial on active board, all regions on time-travel target boards
     let legalMoveRegions: string[] | undefined;
@@ -129,7 +170,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       turn: t,
       exists: true,
       inStabilizationPeriod,
-      isActive: t === activeTurn && !inStabilizationPeriod,
+      isActive: t === (timelinePresents.get(tl) ?? -1) && !inStabilizationPeriod,
       pieces,
       regions,
       ...(isTimeTravelTarget ? { isTimeTravelTarget: true } : {}),
@@ -147,14 +188,16 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     if (!piece || piece.owner !== playerId) { console.log('[pieceClick] blocked: owner mismatch or not found', piece?.owner, '!==', playerId); return; }
     if (selectedPiece?.id === pieceId) { clearSelection(); return; }
 
-    // Normalize to the active board so actions always submit from the present.
+    // Find the piece's present board: the latest non-stabilization board on its timeline.
+    const tlPresent = timelinePresents.get(cell.timelineId) ?? activeTurn;
     const activeBoard = data.boards.find(b =>
       !b.inStabilizationPeriod &&
-      (b.address.turn as number) === activeTurn &&
+      (b.address.timeline as string) === cell.timelineId &&
+      (b.address.turn as number) === tlPresent &&
       b.entities.some(([id]) => id === pieceId)
     );
     console.log('[pieceClick] activeBoard:', activeBoard ? `${activeBoard.address.timeline as string}:T${activeBoard.address.turn as number}` : 'NOT FOUND', 'boards searched:', data.boards.length);
-    if (!activeBoard) { console.log('[pieceClick] blocked: no activeBoard at turn', activeTurn, 'boards:', data.boards.map(b => `${b.address.timeline as string}:T${b.address.turn as number}`)); return; }
+    if (!activeBoard) { console.log('[pieceClick] blocked: no activeBoard at turn', tlPresent, 'boards:', data.boards.map(b => `${b.address.timeline as string}:T${b.address.turn as number}`)); return; }
     const activeEntry = activeBoard.entities.find(([id]) => id === pieceId);
     const activeLoc = (activeEntry?.[1] as { location?: { region?: string } } | undefined)?.location;
     console.log('[pieceClick] activeLoc:', activeLoc);
@@ -163,7 +206,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
     setSelectedPiece({
       id: pieceId,
       owner: piece.owner,
-      fromBoard: { timelineId: activeBoard.address.timeline as string, turn: activeTurn },
+      fromBoard: { timelineId: cell.timelineId, turn: tlPresent },
       fromRegion: activeLoc.region,
     });
   }
@@ -182,35 +225,37 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
 
     const fromRegion = freshRegion ?? selectedPiece.fromRegion;
 
-    if (cell.timelineId === selectedPiece.fromBoard.timelineId && cell.turn === activeTurn) {
+    const fromPresent = selectedPiece.fromBoard.turn;
+
+    if (cell.timelineId === selectedPiece.fromBoard.timelineId && cell.turn === fromPresent) {
       // Spatial move on the same board
       const legal = STUB_ADJACENT[fromRegion] ?? [];
       if (!legal.includes(regionId)) return;
       submitAction.mutate({
         gameId,
-        boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: activeTurn },
+        boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: fromPresent },
         action: {
           id: buildActionId() as any,
           type: 'move' as any,
           player: playerId as any,
           entityId: selectedPiece.id as any,
-          from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: fromRegion as any },
-          to: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: regionId as any },
+          from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: fromPresent as any, region: fromRegion as any },
+          to: { timeline: selectedPiece.fromBoard.timelineId as any, turn: fromPresent as any, region: regionId as any },
           payload: {},
           submittedAt: Date.now(),
         },
       });
-    } else if (cell.turn < activeTurn) {
+    } else if (cell.turn < fromPresent) {
       // Time travel — direct addressing, no ghost board re-routing needed
       submitAction.mutate({
         gameId,
-        boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: activeTurn },
+        boardAddress: { timeline: selectedPiece.fromBoard.timelineId, turn: fromPresent },
         action: {
           id: buildActionId() as any,
           type: 'move_to_past' as any,
           player: playerId as any,
           entityId: selectedPiece.id as any,
-          from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: activeTurn as any, region: fromRegion as any },
+          from: { timeline: selectedPiece.fromBoard.timelineId as any, turn: fromPresent as any, region: fromRegion as any },
           to: { timeline: cell.timelineId as any, turn: cell.turn as any, region: regionId as any },
           payload: {},
           submittedAt: Date.now(),
@@ -294,6 +339,7 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
               cells={cells}
               maxTurn={maxTurn}
               timelines={timelines}
+              branchInfo={data.branchInfo ?? []}
               selectedCell={selectedBoard}
               onCellClick={handleCellClick}
               onPieceClick={handlePieceClick}

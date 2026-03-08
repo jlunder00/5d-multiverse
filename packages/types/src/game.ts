@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { Location, BoardAddress, RegionId } from './coordinates.js';
-import { Entity, EntityId, RegionState, Economy, PlayerId } from './entities.js';
+import { BoardAddress, RegionId } from './coordinates.js';
+import { PieceInfo, RegionState, Economy, PlayerId } from './entities.js';
+import { PieceStore } from './piece-store.js';
 import { Action, ActionResult } from './actions.js';
 import { BranchId } from './branch.js';
 import { WindowMode } from './window.js';
@@ -15,7 +16,8 @@ import { EngineTools } from './engine-tools.js';
 export interface Board {
   address: BoardAddress;
   regions: Map<RegionId, RegionState>;
-  entities: Map<EntityId, Entity>;
+  /** All pieces present on this board. Populated from PieceStore before building ActionContext. */
+  pieces: PieceInfo[];
   /** Per-player economies for this timeline. */
   economies: Map<PlayerId, Economy>;
   /** Opaque plugin-specific data (dev card decks, tech trees, etc.). */
@@ -43,6 +45,11 @@ export interface ActionContext {
   isHalfAction: boolean;
   /** The pending branch whose window is closing, if isHalfAction is true. */
   halfActionBranchId: BranchId | undefined;
+  /**
+   * Piece store for direct mutations by the plugin evaluator.
+   * Undefined until Phase 3 wires it in; plugins may guard with `if (context.pieceStore)`.
+   */
+  pieceStore: PieceStore | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +147,7 @@ export interface IArrivalPolicy {
    */
   getArrivalActions(
     branchId: BranchId,
-    arrivingEntities: Entity[],
+    arrivingPieces: PieceInfo[],
     context: ActionContext,
   ): Action[];
 

@@ -160,7 +160,8 @@ describe('processAction — move_to_past', () => {
       { timeline: TL('TL0'), turn: T(2) }, false, undefined);
 
     const [node] = stabilizationTimelines(next);
-    const newBoard = getBoardAt(next.world, { timeline: node!.timelineId, turn: T(2) });
+    // Board is at originAddress.turn (T=1), not T=2
+    const newBoard = getBoardAt(next.world, { timeline: node!.timelineId, turn: T(1) });
     // Entity arrives under a new ID (bootstrap paradox); find by owner + region
     const arrived = [...(newBoard?.entities.values() ?? [])].find(
       (e) => e.owner === 'P1' && (e.location.region as string) === 'C',
@@ -168,8 +169,8 @@ describe('processAction — move_to_past', () => {
     expect(arrived).toBeDefined();
   });
 
-  it('new timeline board is placed at originAddress.turn + 1', () => {
-    // Piece at T=2 travels to origin T=1. New timeline board should appear at T=2 (1+1).
+  it('new timeline board is placed at originAddress.turn (not +1)', () => {
+    // Piece at T=2 travels to origin T=1. New timeline board should appear at T=1 (origin turn).
     const state = stateForTimeTravelFrom2To1();
     const action = makeAction('move_to_past', 'P1',
       { timeline: 'TL0', turn: 2, region: 'N' },
@@ -180,9 +181,9 @@ describe('processAction — move_to_past', () => {
       { timeline: TL('TL0'), turn: T(2) }, false, undefined);
 
     const [node] = stabilizationTimelines(next);
-    const newBoard = getBoardAt(next.world, { timeline: node!.timelineId, turn: T(2) });
+    const newBoard = getBoardAt(next.world, { timeline: node!.timelineId, turn: T(1) });
     expect(newBoard).toBeDefined();
-    expect(newBoard!.address.turn as number).toBe(2);
+    expect(newBoard!.address.turn as number).toBe(1);
   });
 
   it('opens a sliding window for the new branch', () => {
