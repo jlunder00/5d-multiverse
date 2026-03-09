@@ -75,7 +75,7 @@ describe('PieceStorePool', () => {
   });
 
   it('accessing an existing entry promotes it to MRU (not evicted next)', () => {
-    pool.get('g1');
+    const g1ref = pool.get('g1');
     pool.get('g2');
     pool.get('g3');
 
@@ -86,9 +86,46 @@ describe('PieceStorePool', () => {
     pool.get('g4');
     expect(pool.size).toBe(3);
 
-    // g1 is still in pool (was MRU-promoted); re-fetch keeps same instance
-    const g1again = pool.get('g1');
-    expect(g1again).toBeDefined();
+    // g1 is still in pool (was MRU-promoted) — same store instance
+    expect(pool.get('g1')).toBe(g1ref);
+  });
+
+  it('LRU eviction failure removes the stale entry from pool and re-throws', () => {
+    const s1 = pool.get('g1'); // LRU
+    pool.get('g2');
+    pool.get('g3'); // MRU
+    // Pre-close g1's underlying DB so store.close() throws on eviction
+    s1.db.close();
+
+    // Adding g4 should try to evict g1 — fails, but g1 must be removed from pool
+    expect(() => pool.get('g4')).toThrow();
+    // g1 removed before close() was attempted; g2 and g3 remain
+    expect(pool.size).toBe(2);
+  });
+
+  it('evict() removes entry from pool even when close() throws', () => {
+    const s1 = pool.get('g1');
+    pool.get('g2');
+    s1.db.close(); // pre-close so store.close() will throw
+    expect(() => pool.evict('g1')).toThrow();
+    // g1 was removed from the map before close() was called
+    expect(pool.size).toBe(1);
+  });
+
+  it('closeAll() clears pool and throws AggregateError when any store fails to close', () => {
+    const s1 = pool.get('g1');
+    pool.get('g2');
+    s1.db.close(); // pre-close so g1's close() will throw
+
+    let thrown: unknown;
+    try {
+      pool.closeAll();
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(pool.size).toBe(0); // pool cleared regardless
+    expect(thrown).toBeInstanceOf(AggregateError);
   });
 
   it('deleteGame on one game does not affect another game in the same store', () => {

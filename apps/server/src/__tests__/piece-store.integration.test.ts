@@ -390,7 +390,7 @@ describe('SqlitePieceStore', () => {
       const tx = store.beginTurn(GAME);
       store.movePiece(GAME, pid('p1'), { region: regionId('R9') });
       // Simulate `using` keyword by calling [Symbol.dispose] directly
-      (tx as unknown as { [Symbol.dispose](): void })[Symbol.dispose]?.();
+      (tx as unknown as { [Symbol.dispose](): void })[Symbol.dispose]();
       expect(store.getPieceLocation(GAME, pid('p1'))!.region).toBe('R1');
     });
   });
@@ -441,8 +441,52 @@ describe('SqlitePieceStore', () => {
       const pieces = store.getPiecesOnBoard(GAME, 'TL1', 1);
       expect(pieces.find(p => p.realPieceId === 'p1')).toBeDefined();
 
+      // Piece is absent from source board
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 1)).toHaveLength(0);
+
       const loc = store.getPieceLocation(GAME, pid('p1'));
       expect(loc!.timeline).toBe('TL1');
+    });
+  });
+
+  // ── movePiece turn support ──────────────────────────────────────────────────
+
+  describe('movePiece — turn move', () => {
+    it('moves a piece to a different turn number', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+      const tx = store.beginTurn(GAME);
+      store.movePiece(GAME, pid('p1'), { turn: 3 });
+      tx.commit();
+
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 3)).toHaveLength(1);
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 1)).toHaveLength(0);
+      expect(store.getPieceLocation(GAME, pid('p1'))!.turn).toBe(3);
+    });
+  });
+
+  // ── movePiece error paths ───────────────────────────────────────────────────
+
+  describe('movePiece — error paths', () => {
+    it('throws when newCoord has no fields set', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+      const tx = store.beginTurn(GAME);
+      expect(() => store.movePiece(GAME, pid('p1'), {})).toThrow();
+      tx.rollback();
+    });
+  });
+
+  // ── removePiece error paths ────────────────────────────────────────────────
+
+  describe('removePiece — error paths', () => {
+    it('throws when piece is not in present_positions', () => {
+      store.initGame(GAME, []);
+      const tx = store.beginTurn(GAME);
+      expect(() => store.removePiece(GAME, pid('nonexistent'))).toThrow();
+      tx.rollback();
     });
   });
 
@@ -511,6 +555,63 @@ describe('SqlitePieceStore', () => {
       const loc = store.getPieceLocation(GAME, pid('p1'));
       expect(loc!.timeline).toBe('TL1');
       expect(loc!.region).toBe('R3');
+    });
+  });
+
+  // ── savepoint name validation ──────────────────────────────────────────────
+
+  describe('savepoint — name validation', () => {
+    it('throws for savepoint names containing hyphens or spaces', () => {
+      store.initGame(GAME, []);
+      const tx = store.beginTurn(GAME);
+      expect(() => tx.savepoint('bad-name')).toThrow();
+      expect(() => tx.savepoint('bad name')).toThrow();
+      tx.rollback();
+    });
+
+    it('throws for rollbackTo names with non-word characters', () => {
+      store.initGame(GAME, []);
+      const tx = store.beginTurn(GAME);
+      tx.savepoint('valid');
+      expect(() => tx.rollbackTo('bad-name')).toThrow();
+      tx.rollback();
+    });
+  });
+
+  // ── advanceAllTimelines: multiple timelines ────────────────────────────────
+
+  describe('advanceAllTimelines — multiple timelines', () => {
+    it('advances two timelines atomically in one call', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL1', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+
+      store.advanceAllTimelines(GAME, [
+        { timeline: 'TL0', fromTurn: 1 },
+        { timeline: 'TL1', fromTurn: 1 },
+      ]);
+
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 2)).toHaveLength(1);
+      expect(store.getPiecesOnBoard(GAME, 'TL1', 2)).toHaveLength(1);
+      expect(store.getHistoricalPieces(GAME, 'TL0', 1)).toHaveLength(1);
+      expect(store.getHistoricalPieces(GAME, 'TL1', 1)).toHaveLength(1);
+    });
+  });
+
+  // ── deleteGame clears historical snapshots ─────────────────────────────────
+
+  describe('deleteGame — full cleanup', () => {
+    it('clears historical_snapshots in addition to present positions', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+      expect(store.getHistoricalPieces(GAME, 'TL0', 1)).toHaveLength(1);
+
+      store.deleteGame(GAME);
+
+      expect(store.getHistoricalPieces(GAME, 'TL0', 1)).toHaveLength(0);
     });
   });
 
