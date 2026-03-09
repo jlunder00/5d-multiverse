@@ -26,6 +26,13 @@ import type {
   Turn,
   BranchId,
   BranchWindow,
+  PieceStore,
+  TurnTransaction,
+  PieceState,
+  PieceInfo,
+  HistoricalPieceInfo,
+  SpacetimeCoord,
+  RealPieceId,
 } from '@5d/types';
 import { boardKey } from '@5d/types';
 import type { GameLoopState } from '../game-loop.js';
@@ -43,6 +50,171 @@ export const P = (s: string) => s as PlayerId;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const EID = (s: string) => s as any;
 export const RID = (s: string) => s as RegionId;
+export const PID = (s: string) => s as RealPieceId;
+
+// ---------------------------------------------------------------------------
+// MockPieceStore — in-memory PieceStore for engine unit tests
+// ---------------------------------------------------------------------------
+export class MockPieceStore implements PieceStore {
+  // key: `${gameId}:${realPieceId}` → PieceState
+  private pieces = new Map<string, PieceState>();
+  // key: `${gameId}:${realPieceId}` → current SpacetimeCoord
+  private positions = new Map<string, SpacetimeCoord>();
+  // key: `${gameId}:${timeline}:${turn}` → HistoricalPieceInfo[]
+  private history = new Map<string, HistoricalPieceInfo[]>();
+
+  private pk(gameId: string, realPieceId: string) { return `${gameId}:${realPieceId}`; }
+  private bk(gameId: string, timeline: string, turn: number) { return `${gameId}:${timeline}:${turn}`; }
+
+  initGame(gameId: string, initialPieces: { state: PieceState; coord: SpacetimeCoord }[]): void {
+    for (const { state, coord } of initialPieces) {
+      const key = this.pk(gameId, state.id);
+      this.pieces.set(key, state);
+      this.positions.set(key, coord);
+    }
+  }
+
+  getPiecesOnBoard(gameId: string, timeline: string, turn: number): PieceInfo[] {
+    const result: PieceInfo[] = [];
+    for (const [key, coord] of this.positions) {
+      if (!key.startsWith(`${gameId}:`)) continue;
+      if (coord.timeline !== timeline || coord.turn !== turn) continue;
+      const realPieceId = key.slice(gameId.length + 1) as RealPieceId;
+      const state = this.pieces.get(key)!;
+      result.push({
+        realPieceId,
+        owner: coord.owner,
+        type: coord.type,
+        region: coord.region,
+        disambiguator: coord.disambiguator,
+        data: state.data,
+      });
+    }
+    return result;
+  }
+
+  getHistoricalPieces(gameId: string, timeline: string, turn: number): HistoricalPieceInfo[] {
+    return this.history.get(this.bk(gameId, timeline, turn)) ?? [];
+  }
+
+  getPieceLocation(gameId: string, realPieceId: RealPieceId): SpacetimeCoord | undefined {
+    return this.positions.get(this.pk(gameId, realPieceId));
+  }
+
+  getPieceState(gameId: string, realPieceId: RealPieceId): PieceState | undefined {
+    return this.pieces.get(this.pk(gameId, realPieceId));
+  }
+
+  movePiece(gameId: string, realPieceId: RealPieceId, newCoord: Partial<SpacetimeCoord>): void {
+    const key = this.pk(gameId, realPieceId);
+    const cur = this.positions.get(key);
+    if (!cur) throw new Error(`movePiece: piece "${realPieceId}" not found in game "${gameId}"`);
+    this.positions.set(key, { ...cur, ...newCoord });
+  }
+
+  updatePieceData(gameId: string, realPieceId: RealPieceId, data: Record<string, unknown>): void {
+    const key = this.pk(gameId, realPieceId);
+    const cur = this.pieces.get(key);
+    if (!cur) throw new Error(`updatePieceData: piece "${realPieceId}" not found in game "${gameId}"`);
+    this.pieces.set(key, { ...cur, data: { ...cur.data, ...data } });
+  }
+
+  removePiece(gameId: string, realPieceId: RealPieceId): void {
+    this.positions.delete(this.pk(gameId, realPieceId));
+    // pieces entry retained (like SQLite)
+  }
+
+  addPiece(gameId: string, state: PieceState, coord: SpacetimeCoord): void {
+    const key = this.pk(gameId, state.id);
+    this.pieces.set(key, state);
+    this.positions.set(key, coord);
+  }
+
+  advanceAllTimelines(gameId: string, timelines: { timeline: string; fromTurn: number }[]): void {
+    for (const { timeline, fromTurn } of timelines) {
+      // Snapshot current board to history
+      const current = this.getPiecesOnBoard(gameId, timeline, fromTurn);
+      const snap: HistoricalPieceInfo[] = current.map((p) => ({
+        owner: p.owner,
+        type: p.type,
+        region: p.region,
+        disambiguator: p.disambiguator,
+        data: p.data,
+      }));
+      this.history.set(this.bk(gameId, timeline, fromTurn), snap);
+      // Advance each piece's turn
+      for (const [key, coord] of this.positions) {
+        if (!key.startsWith(`${gameId}:`)) continue;
+        if (coord.timeline !== timeline || coord.turn !== fromTurn) continue;
+        this.positions.set(key, { ...coord, turn: fromTurn + 1 });
+      }
+    }
+  }
+
+  createBranch(gameId: string, params: {
+    originTimeline: string;
+    originTurn: number;
+    newTimelineId: string;
+    travelerId: RealPieceId;
+    travelerDestRegion: RegionId;
+  }): void {
+    const { originTimeline, originTurn, newTimelineId, travelerId, travelerDestRegion } = params;
+
+    const historicalPieces = this.getHistoricalPieces(gameId, originTimeline, originTurn);
+    if (historicalPieces.length === 0) {
+      throw new Error(`createBranch: no historical snapshot at (${originTimeline}, ${originTurn})`);
+    }
+
+    // Bootstrap new timeline from historical snapshot (excluding the traveler itself)
+    for (const hp of historicalPieces) {
+      const newId = `${newTimelineId}-${hp.owner}-${hp.type}-${hp.disambiguator}` as RealPieceId;
+      this.addPiece(gameId,
+        { id: newId, owner: hp.owner, type: hp.type, data: hp.data },
+        { timeline: newTimelineId, turn: originTurn, region: hp.region,
+          owner: hp.owner, type: hp.type, disambiguator: hp.disambiguator },
+      );
+    }
+
+    // Get traveler state
+    const travelerState = this.getPieceState(gameId, travelerId);
+    if (!travelerState) throw new Error(`createBranch: traveler "${travelerId}" not found`);
+
+    // Remove traveler from source
+    this.removePiece(gameId, travelerId);
+
+    // Add traveler to new timeline at destination region
+    this.addPiece(gameId, travelerState, {
+      timeline: newTimelineId,
+      turn: originTurn,
+      region: travelerDestRegion,
+      owner: travelerState.owner,
+      type: travelerState.type,
+      disambiguator: 0,
+    });
+  }
+
+  beginTurn(_gameId: string): TurnTransaction {
+    return {
+      savepoint: () => {},
+      rollbackTo: () => {},
+      commit: () => {},
+      rollback: () => {},
+    };
+  }
+
+  deleteGame(gameId: string): void {
+    const prefix = `${gameId}:`;
+    for (const key of [...this.pieces.keys()]) {
+      if (key.startsWith(prefix)) this.pieces.delete(key);
+    }
+    for (const key of [...this.positions.keys()]) {
+      if (key.startsWith(prefix)) this.positions.delete(key);
+    }
+    for (const key of [...this.history.keys()]) {
+      if (key.startsWith(prefix)) this.history.delete(key);
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Cross-map layout: C center, N/S/E/W arms
@@ -79,10 +251,9 @@ const actionValidator: IActionValidator = {
 
     if ((type as string) === 'move') {
       if (!entityId) return { valid: false, reason: 'move requires entityId' };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const entity = (context.board as any).entities?.get(entityId);
-      if (!entity) return { valid: false, reason: 'entity not found on board' };
-      if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
+      const piece = context.board.pieces.find((p) => p.realPieceId === entityId);
+      if (!piece) return { valid: false, reason: 'piece not found on board' };
+      if ((piece.owner as string) !== (action.player as string)) return { valid: false, reason: 'not your piece' };
       if (from.timeline !== to.timeline || from.turn !== to.turn) {
         return { valid: false, reason: 'move must stay on the same board' };
       }
@@ -95,10 +266,9 @@ const actionValidator: IActionValidator = {
 
     if ((type as string) === 'move_to_past') {
       if (!entityId) return { valid: false, reason: 'move_to_past requires entityId' };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const entity = (context.board as any).entities?.get(entityId);
-      if (!entity) return { valid: false, reason: 'entity not found on board' };
-      if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
+      const piece = context.board.pieces.find((p) => p.realPieceId === entityId);
+      if (!piece) return { valid: false, reason: 'piece not found on board' };
+      if ((piece.owner as string) !== (action.player as string)) return { valid: false, reason: 'not your piece' };
       if ((to.turn as number) >= (from.turn as number)) {
         return { valid: false, reason: 'destination must be a past turn' };
       }
@@ -118,19 +288,18 @@ const actionEvaluator: IActionEvaluator = {
     }
 
     if ((type as string) === 'move' && entityId) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const entity = (context.board as any).entities?.get(entityId);
-      if (!entity) return { actionId: action.id, success: false, error: 'entity not found', effects: [] };
-      const moved = { ...entity, location: { ...action.to } };
-      return {
-        actionId: action.id,
-        success: true,
-        effects: [{ type: 'entity_upsert', entity: moved }],
-      };
+      const piece = context.board.pieces.find((p) => p.realPieceId === entityId);
+      if (!piece) return { actionId: action.id, success: false, error: 'piece not found', effects: [] };
+      // Spatial move: mutate store directly, return empty effects
+      if (context.pieceStore) {
+        context.pieceStore.movePiece(context.gameId, entityId as RealPieceId, { region: action.to.region });
+      }
+      return { actionId: action.id, success: true, effects: [] };
     }
 
-    if ((type as string) === 'move_to_past' && entityId) {
-      return { actionId: action.id, success: true, effects: [{ type: 'entity_remove', entityId }] };
+    if ((type as string) === 'move_to_past') {
+      // Engine handles piece removal and branch bootstrap via pieceStore.createBranch()
+      return { actionId: action.id, success: true, effects: [] };
     }
 
     return { actionId: action.id, success: false, error: 'unknown action', effects: [] };
@@ -202,9 +371,7 @@ export const testTools: EngineTools = {
 export function makeBoard(
   timeline: string,
   turn: number,
-  opts: {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entities?: any[];   // Phase 1 bridge: runtime entity objects (not typed)
+  _opts: {
     isPending?: boolean;
     originAddress?: BoardAddress;
   } = {},
@@ -217,37 +384,14 @@ export function makeBoard(
       { id: id as RegionId, owner: null, data: {} },
     ]),
   );
-  // Phase 1 bridge: keep runtime entities Map as untyped extra field.
-  // Board type has pieces: PieceInfo[], so we cast through any.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const entities = new Map<any, any>(
-    (opts.entities ?? []).map((e) => [e.id, e]),
-  );
   const pluginData: Record<string, unknown> = {};
 
   return {
     address: { timeline: tl, turn: tr },
     regions,
-    entities,
     pieces: [],
     economies: new Map(),
     pluginData,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any as Board;
-}
-
-/**
- * Create a runtime entity object at the given location.
- * Phase 1 bridge: returns plain object (not typed as Entity since Entity is removed).
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function makeEntity(id: string, owner: string, timeline: string, turn: number, region: string): any {
-  return {
-    id,
-    owner: P(owner),
-    type: 'piece',
-    location: { timeline: TL(timeline), turn: T(turn), region: RID(region) },
-    data: {},
   };
 }
 
@@ -262,6 +406,8 @@ export function makeState(
   world: WorldState,
   players: string[],
   globalTurn: number,
+  pieceStore?: PieceStore,
+  gameId = 'test-game',
 ): GameLoopState {
   const pids = players.map(P);
   return {
@@ -270,6 +416,8 @@ export function makeState(
     order: createExecutionOrder(pids, T(globalTurn)),
     windows: new Map<BranchId, BranchWindow>(),
     winner: null,
+    gameId,
+    pieceStore,
   };
 }
 
@@ -287,7 +435,7 @@ export function makeAction(
     player: P(player),
     from: { timeline: TL(from.timeline), turn: T(from.turn), region: RID(from.region) },
     to: { timeline: TL(to.timeline), turn: T(to.turn), region: RID(to.region) },
-    entityId: entityId ? EID(entityId) : undefined,
+    entityId: entityId ? PID(entityId) : undefined,
     payload: {},
     submittedAt: Date.now(),
   };

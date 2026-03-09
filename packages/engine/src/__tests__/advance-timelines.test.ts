@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { advanceAllTimelines } from '../game-loop.js';
 import { getBoardAt } from '../world-state.js';
-import { makeBoard, makeEntity, makeWorld, TL, T } from './helpers.js';
+import { MockPieceStore, makeBoard, makeWorld, TL, T, P, PID, RID } from './helpers.js';
+import type { UnitTypeId } from '@5d/types';
+
+const PIECE = 'piece' as UnitTypeId;
 
 describe('advanceAllTimelines', () => {
   it('creates a new board one turn ahead for the main timeline', () => {
@@ -17,8 +20,6 @@ describe('advanceAllTimelines', () => {
   });
 
   it('advances a ghost/pending timeline that is anchored at a past turn', () => {
-    // Main timeline is at T=4. Ghost was created at T=1.
-    // Both should get a new board at their respective turn+1.
     const world = makeWorld([
       makeBoard('TL0', 4),
       makeBoard('TL-branch', 1, { isPending: true }),
@@ -30,7 +31,6 @@ describe('advanceAllTimelines', () => {
   });
 
   it('only advances the LATEST board per timeline, not every board', () => {
-    // TL0 has T=1, T=2, T=3. Only T=3 (latest) should spawn T=4.
     const world = makeWorld([
       makeBoard('TL0', 1),
       makeBoard('TL0', 2),
@@ -39,11 +39,9 @@ describe('advanceAllTimelines', () => {
     const result = advanceAllTimelines(world);
 
     expect(getBoardAt(result, { timeline: TL('TL0'), turn: T(4) })).toBeDefined();
-    // T=2 and T=1 should NOT have produced T=3-copy or T=2-copy
     const tl0boards = [...result.boards.values()].filter(
       (b) => (b.address.timeline as string) === 'TL0',
     );
-    // 4 boards: original T1, T2, T3, and the new T4
     expect(tl0boards.length).toBe(4);
   });
 
@@ -60,30 +58,36 @@ describe('advanceAllTimelines', () => {
     expect(getBoardAt(result, { timeline: TL('TL-ghost'), turn: T(2) })).toBeDefined();
   });
 
-  it('carries entity positions forward to the next board', () => {
-    const entity = makeEntity('piece-P1', 'P1', 'TL0', 3, 'C');
-    const world = makeWorld([makeBoard('TL0', 3, { entities: [entity] })]);
-    const result = advanceAllTimelines(world);
+  it('advances piece positions to the next turn in the store', () => {
+    const store = new MockPieceStore();
+    store.initGame('test-game', [{
+      state: { id: PID('piece-P1'), owner: P('P1'), type: PIECE, data: {} },
+      coord: { timeline: 'TL0', turn: 1, region: RID('C'), owner: P('P1'), type: PIECE, disambiguator: 0 },
+    }]);
+    const world = makeWorld([makeBoard('TL0', 1)]);
 
-    const nextBoard = getBoardAt(result, { timeline: TL('TL0'), turn: T(4) });
-    expect(nextBoard).toBeDefined();
-    const advancedEntity = nextBoard!.entities.get('piece-P1' as any);
-    expect(advancedEntity).toBeDefined();
-    // Entity region must be preserved
-    expect(advancedEntity!.location.region as string).toBe('C');
-    // Entity turn must be updated
-    expect(advancedEntity!.location.turn as number).toBe(4);
+    advanceAllTimelines(world, store, 'test-game');
+
+    const pieces = store.getPiecesOnBoard('test-game', 'TL0', 2);
+    const p = pieces.find((p) => p.realPieceId === PID('piece-P1'));
+    expect(p).toBeDefined();
+    // Region must be preserved
+    expect(p!.region as string).toBe('C');
   });
 
-  it('updates entity turn but NOT entity region when advancing', () => {
-    // Regression: advancing boards must not reset entities to their starting positions
-    const entity = makeEntity('piece-P1', 'P1', 'TL0', 2, 'S'); // piece was moved to S
-    const world = makeWorld([makeBoard('TL0', 2, { entities: [entity] })]);
-    const result = advanceAllTimelines(world);
+  it('preserves piece region when advancing (does not reset to starting position)', () => {
+    const store = new MockPieceStore();
+    store.initGame('test-game', [{
+      state: { id: PID('piece-P1'), owner: P('P1'), type: PIECE, data: {} },
+      // piece was moved to 'S' before advance
+      coord: { timeline: 'TL0', turn: 2, region: RID('S'), owner: P('P1'), type: PIECE, disambiguator: 0 },
+    }]);
+    const world = makeWorld([makeBoard('TL0', 2)]);
 
-    const nextBoard = getBoardAt(result, { timeline: TL('TL0'), turn: T(3) });
-    const e = nextBoard?.entities.get('piece-P1' as any);
-    expect(e?.location.region as string).toBe('S');   // region preserved
-    expect(e?.location.turn as number).toBe(3);        // turn updated
+    advanceAllTimelines(world, store, 'test-game');
+
+    const piece = store.getPieceLocation('test-game', PID('piece-P1'));
+    expect(piece?.region as string).toBe('S');  // region preserved
+    expect(piece?.turn).toBe(3);                 // turn updated
   });
 });

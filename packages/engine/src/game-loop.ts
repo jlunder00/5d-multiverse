@@ -10,6 +10,8 @@ import {
   BoardAddress,
   BranchId,
   EngineTools,
+  PieceStore,
+  RealPieceId,
   boardKey,
 } from '@5d/types';
 import { getBoardAt, applyResultToWorld, setBoard } from './world-state.js';
@@ -27,10 +29,15 @@ export interface GameLoopState {
   windows: Map<BranchId, BranchWindow>;
   /** Player declared winner, if any. */
   winner: PlayerId | null;
+  /** Game identifier for PieceStore calls. */
+  gameId: string;
+  /** PieceStore for piece persistence. Undefined until Phase 4 wires the server. */
+  pieceStore: PieceStore | undefined;
 }
 
 /**
  * Builds an ActionContext for the given board and player.
+ * If a pieceStore is provided, populates board.pieces from the store.
  */
 function buildContext(
   world: WorldState,
@@ -41,20 +48,26 @@ function buildContext(
   tools: EngineTools,
   isHalfAction: boolean,
   halfActionBranchId: BranchId | undefined,
+  gameId: string,
+  pieceStore: PieceStore | undefined,
 ): ActionContext {
   const board = getBoardAt(world, address);
   if (!board) throw new Error(`Board not found: ${boardKey(address)}`);
   const phase = plugin.turnPhases[0];
   if (!phase) throw new Error('Plugin has no turn phases');
+  const pieces = pieceStore
+    ? pieceStore.getPiecesOnBoard(gameId, address.timeline as string, address.turn as number)
+    : board.pieces;
   return {
-    board,
+    board: { ...board, pieces },
     world,
     player,
     currentPhase: phase.id,
     tools,
     isHalfAction,
     halfActionBranchId,
-    pieceStore: undefined,
+    pieceStore,
+    gameId,
   };
 }
 
@@ -116,7 +129,7 @@ export function processAction(
 
   const context = buildContext(
     state.world, address, player, state.order, plugin, tools,
-    isHalfAction, halfActionBranchId,
+    isHalfAction, halfActionBranchId, state.gameId, state.pieceStore,
   );
 
   const validation = plugin.actionValidator.validate(action, context);
@@ -302,8 +315,13 @@ export function checkWinCondition(state: GameLoopState, plugin: IGameDefinition)
  * Copies each timeline's latest board forward by one turn.
  * Must be called on every endTurn so all timelines — including stabilization-period
  * ones — advance in lockstep with the main timeline.
+ * If pieceStore and gameId are provided, also delegates piece advancement to the store.
  */
-export function advanceAllTimelines(world: WorldState): WorldState {
+export function advanceAllTimelines(
+  world: WorldState,
+  pieceStore?: PieceStore,
+  gameId?: string,
+): WorldState {
   const latestPerTimeline = new Map<string, Board>();
   for (const [, board] of world.boards) {
     const tl = board.address.timeline as string;
