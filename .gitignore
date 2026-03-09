@@ -2,7 +2,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 data.db
+*.db-wal
+*.db-shm
+apps/server/data/
 .env
 docs/plans/
-apps/server/data.db-wal
-apps/server/data.db-shm
+.turbo/
