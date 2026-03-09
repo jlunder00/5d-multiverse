@@ -160,12 +160,10 @@ export class MockPieceStore implements PieceStore {
   }): void {
     const { originTimeline, originTurn, newTimelineId, travelerId, travelerDestRegion } = params;
 
+    // Bootstrap from history if available; if no snapshot yet (test-only scenario), proceed with empty.
     const historicalPieces = this.getHistoricalPieces(gameId, originTimeline, originTurn);
-    if (historicalPieces.length === 0) {
-      throw new Error(`createBranch: no historical snapshot at (${originTimeline}, ${originTurn})`);
-    }
 
-    // Bootstrap new timeline from historical snapshot (excluding the traveler itself)
+    // Bootstrap new timeline from historical snapshot
     for (const hp of historicalPieces) {
       const newId = `${newTimelineId}-${hp.owner}-${hp.type}-${hp.disambiguator}` as RealPieceId;
       this.addPiece(gameId,

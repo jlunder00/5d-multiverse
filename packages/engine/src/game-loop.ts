@@ -137,11 +137,12 @@ export function processAction(
     throw new Error(`Invalid action: ${validation.reason ?? 'unknown reason'}`);
   }
 
-  // Capture moving entity BEFORE applyResultToWorld removes it from the source board
-  // Phase 1 bridge: runtime entities Map still lives on board as untyped field
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const movingEntity: any = action.entityId
-    ? (getBoardAt(state.world, address) as any)?.entities?.get(action.entityId)
+  // Capture the moving piece BEFORE evaluation (store may be mutated by evaluator)
+  const movingPiece = action.entityId && state.pieceStore
+    ? state.pieceStore.getPieceState(state.gameId, action.entityId as RealPieceId)
+    : undefined;
+  const movingPieceLoc = movingPiece && state.pieceStore
+    ? state.pieceStore.getPieceLocation(state.gameId, movingPiece.id)
     : undefined;
 
   const result: ActionResult = plugin.actionEvaluator.evaluate(action, context);
@@ -151,23 +152,24 @@ export function processAction(
   let windows = state.windows;
 
   // If the destination is already a stabilizing timeline (direct addressing), insert
-  // the entity there without triggering a new branch.
+  // the piece there without triggering a new branch.
   const directStabilizingNode = branchTree.nodes[action.to.timeline as string];
   if (result.success && directStabilizingNode?.inStabilizationPeriod) {
-    if (movingEntity) {
-      const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
-      if (destBoard) {
-        const arrivedId = `${movingEntity.id}-arr-${action.id}`;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const entities = new Map((destBoard as any).entities);
-        entities.set(arrivedId, {
-          ...movingEntity,
-          id: arrivedId,
-          location: { ...action.to },
-        });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        world = setBoard(world, addParty({ ...destBoard, entities } as any as Board, player));
-      }
+    if (movingPiece && movingPieceLoc && state.pieceStore) {
+      const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
+      state.pieceStore.addPiece(state.gameId,
+        { ...movingPiece, id: arrivedId },
+        { ...movingPieceLoc,
+          timeline: directStabilizingNode.timelineId as string,
+          turn: action.to.turn as number,
+          region: action.to.region,
+        },
+      );
+    }
+    // Update the dest board's parties list
+    const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
+    if (destBoard) {
+      world = setBoard(world, addParty(destBoard, player));
     }
   } else if (result.success && plugin.branchTrigger.shouldBranch(action, result, context)) {
     const originAddress = plugin.branchTrigger.getBranchOrigin(action, result, context);
@@ -177,24 +179,24 @@ export function processAction(
 
     if (existingBranchNode) {
       // Subsequent arrival via origin address: bootstrap-paradox duplicate — historical
-      // copy stays, arriving piece inserted under a new entity ID so both coexist.
-      if (movingEntity) {
-        // Board is at originAddress.turn (the timestep the piece came from)
+      // copy stays, arriving piece inserted under a new piece ID so both coexist.
+      if (movingPiece && movingPieceLoc && state.pieceStore) {
         const stabilizationStartTurn = originAddress.turn as Turn;
-        const destAddress = { timeline: existingBranchNode.timelineId, turn: stabilizationStartTurn };
-        const destBoard = getBoardAt(world, destAddress);
-        if (destBoard) {
-          const arrivedId = `${movingEntity.id}-arr-${action.id}`;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const entities = new Map((destBoard as any).entities);
-          entities.set(arrivedId, {
-            ...movingEntity,
-            id: arrivedId,
-            location: { timeline: existingBranchNode.timelineId, turn: stabilizationStartTurn, region: action.to.region },
-          });
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          world = setBoard(world, addParty({ ...destBoard, entities } as any as Board, player));
-        }
+        const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
+        state.pieceStore.addPiece(state.gameId,
+          { ...movingPiece, id: arrivedId },
+          { ...movingPieceLoc,
+            timeline: existingBranchNode.timelineId as string,
+            turn: stabilizationStartTurn,
+            region: action.to.region,
+          },
+        );
+      }
+      // Update the dest board's parties list
+      const stabilizationStartTurn = originAddress.turn as Turn;
+      const destBoard = getBoardAt(world, { timeline: existingBranchNode.timelineId, turn: stabilizationStartTurn });
+      if (destBoard) {
+        world = setBoard(world, addParty(destBoard, player));
       }
     } else {
       // New branch — pre-assign the timeline ID (= branchId)
@@ -223,29 +225,28 @@ export function processAction(
 
       branchTree = createBranch(branchTree, newNode);
 
-      // Create the first board of the new timeline, copied from origin board.
-      // Historical entities are preserved (bootstrap paradox — both the historical
-      // copy and the arrived copy coexist). The arriving piece gets a new entity ID.
+      // Create the first board of the new timeline in WorldState (for board-address routing).
+      // Piece data is bootstrapped via PieceStore.createBranch() below.
       const originBoard = getBoardAt(world, originAddress);
       if (originBoard) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const entities = new Map((originBoard as any).entities);
-        if (movingEntity) {
-          const arrivedId = `${movingEntity.id}-arr-${action.id}`;
-          entities.set(arrivedId, {
-            ...movingEntity,
-            id: arrivedId,
-            location: { timeline: newTimelineId, turn: stabilizationStartTurn, region: action.to.region },
-          });
-        }
         world = setBoard(world, addParty({
           ...originBoard,
           address: { timeline: newTimelineId, turn: stabilizationStartTurn },
-          entities,
           pieces: [],
           pluginData: { ...originBoard.pluginData },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        } as any as Board, player));
+        }, player));
+      }
+
+      // Bootstrap piece state in the store: copy historical snapshot, remove traveler
+      // from source, place traveler at destination region.
+      if (state.pieceStore && action.entityId) {
+        state.pieceStore.createBranch(state.gameId, {
+          originTimeline: originAddress.timeline as string,
+          originTurn: originAddress.turn as number,
+          newTimelineId: newTimelineId as string,
+          travelerId: action.entityId as RealPieceId,
+          travelerDestRegion: action.to.region,
+        });
       }
 
       // Open sliding window (branchId = newTimelineId as string)
@@ -333,21 +334,22 @@ export function advanceAllTimelines(
   let result = world;
   for (const board of latestPerTimeline.values()) {
     const nextTurn = ((board.address.turn as number) + 1) as Turn;
-    // Phase 1 bridge: carry forward the runtime entities Map (untyped)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const prevEntities: Map<any, any> = (board as any).entities ?? new Map();
-    const nextEntities = new Map(
-      [...prevEntities].map(([id, e]) => [id, { ...e, location: { ...e.location, turn: nextTurn } }]),
-    );
     result = setBoard(result, {
       ...board,
       address: { ...board.address, turn: nextTurn },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      entities: nextEntities,
       pieces: [],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any as Board);
+    });
   }
+
+  // Delegate piece advancement to the store (snapshots current board → history, advances turns)
+  if (pieceStore && gameId) {
+    const timelines = [...latestPerTimeline.entries()].map(([tl, board]) => ({
+      timeline: tl,
+      fromTurn: board.address.turn as number,
+    }));
+    pieceStore.advanceAllTimelines(gameId, timelines);
+  }
+
   return result;
 }
 
