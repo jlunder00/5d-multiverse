@@ -47,25 +47,17 @@ export interface PlayerView {
 
 /**
  * Returns a view of the board for the given player — current state if party,
- * historical snapshot if non-party, or undefined if not visible at all.
+ * or undefined if not visible. Historical piece data is now in PieceStore
+ * (getHistoricalPieces), not in pluginData.
  */
 export function getBoardViewForPlayer(
   world: WorldState,
   branchId: BranchId,
   playerId: PlayerId,
 ): Board | undefined {
-  // Find the board on this timeline (stabilization start turn = any board on the timeline)
   for (const [, board] of world.boards) {
     if ((board.address.timeline as string) !== (branchId as string)) continue;
-
-    if (isParty(world, branchId, playerId)) {
-      return board;
-    }
-
-    const snapshot = board.pluginData['historicalSnapshot'];
-    if (snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot)) {
-      return snapshot as Board;
-    }
+    if (isParty(world, branchId, playerId)) return board;
     return undefined;
   }
   return undefined;

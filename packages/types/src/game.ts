@@ -50,6 +50,8 @@ export interface ActionContext {
    * Undefined until Phase 3 wires it in; plugins may guard with `if (context.pieceStore)`.
    */
   pieceStore: PieceStore | undefined;
+  /** Game ID for PieceStore calls. Populated from GameLoopState.gameId in buildContext. */
+  gameId: string;
 }
 
 // ---------------------------------------------------------------------------

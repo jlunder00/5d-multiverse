@@ -57,6 +57,8 @@ function loadGameState(row: typeof games.$inferSelect): GameLoopState {
     order,
     windows,
     winner: (row.winner as PlayerId | null) ?? null,
+    gameId: row.id,
+    pieceStore: undefined,
   };
 }
 
@@ -130,6 +132,8 @@ export const appRouter = router({
         order,
         windows: new Map(),
         winner: null,
+        gameId: id,
+        pieceStore: undefined,
       };
 
       await ctx.db.insert(games).values({
