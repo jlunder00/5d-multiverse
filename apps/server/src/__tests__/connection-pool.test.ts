@@ -94,20 +94,21 @@ describe('PieceStorePool', () => {
     const s1 = pool.get('g1'); // LRU
     pool.get('g2');
     pool.get('g3'); // MRU
-    // Pre-close g1's underlying DB so store.close() throws on eviction
-    s1.db.close();
+    // Patch close() to simulate a storage failure
+    (s1 as unknown as { close(): void }).close = () => { throw new Error('fake close failure'); };
 
-    // Adding g4 should try to evict g1 — fails, but g1 must be removed from pool
-    expect(() => pool.get('g4')).toThrow();
-    // g1 removed before close() was attempted; g2 and g3 remain
+    // Adding g4 triggers LRU eviction of g1 — should throw
+    expect(() => pool.get('g4')).toThrow(/failed to evict/);
+    // g1 was removed from the map before close() was attempted
     expect(pool.size).toBe(2);
   });
 
   it('evict() removes entry from pool even when close() throws', () => {
     const s1 = pool.get('g1');
     pool.get('g2');
-    s1.db.close(); // pre-close so store.close() will throw
-    expect(() => pool.evict('g1')).toThrow();
+    (s1 as unknown as { close(): void }).close = () => { throw new Error('fake close failure'); };
+
+    expect(() => pool.evict('g1')).toThrow(/failed to close/);
     // g1 was removed from the map before close() was called
     expect(pool.size).toBe(1);
   });
@@ -115,7 +116,7 @@ describe('PieceStorePool', () => {
   it('closeAll() clears pool and throws AggregateError when any store fails to close', () => {
     const s1 = pool.get('g1');
     pool.get('g2');
-    s1.db.close(); // pre-close so g1's close() will throw
+    (s1 as unknown as { close(): void }).close = () => { throw new Error('fake close failure'); };
 
     let thrown: unknown;
     try {

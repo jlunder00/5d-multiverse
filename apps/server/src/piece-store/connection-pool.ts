@@ -18,7 +18,15 @@ export class PieceStorePool {
   constructor(dataDir: string, maxSize = 50) {
     this.dataDir = path.resolve(dataDir);
     this.maxSize = maxSize;
-    fs.mkdirSync(path.join(this.dataDir, 'games'), { recursive: true });
+    const gamesDir = path.join(this.dataDir, 'games');
+    try {
+      fs.mkdirSync(gamesDir, { recursive: true });
+    } catch (err) {
+      throw new Error(
+        `PieceStorePool: failed to create data directory "${gamesDir}": ${(err as Error).message}`,
+        { cause: err },
+      );
+    }
   }
 
   /**
@@ -37,8 +45,17 @@ export class PieceStorePool {
     // Evict LRU if at capacity
     if (this.pool.size >= this.maxSize) {
       const lruKey = this.pool.keys().next().value as string;
-      this.pool.get(lruKey)!.close();
+      const lruStore = this.pool.get(lruKey)!;
+      // Remove from map first so pool stays consistent even if close() throws.
       this.pool.delete(lruKey);
+      try {
+        lruStore.close();
+      } catch (err) {
+        throw new Error(
+          `PieceStorePool.get("${gameId}"): failed to evict LRU game "${lruKey}": ${(err as Error).message}`,
+          { cause: err },
+        );
+      }
     }
 
     const dbPath = this._dbPath(gameId);
@@ -62,8 +79,16 @@ export class PieceStorePool {
   evict(gameId: string): void {
     const store = this.pool.get(gameId);
     if (store) {
-      store.close();
+      // Remove from map first so pool stays consistent even if close() throws.
       this.pool.delete(gameId);
+      try {
+        store.close();
+      } catch (err) {
+        throw new Error(
+          `PieceStorePool.evict("${gameId}"): failed to close store: ${(err as Error).message}`,
+          { cause: err },
+        );
+      }
     }
   }
 
@@ -77,7 +102,12 @@ export class PieceStorePool {
       try { store.close(); } catch (err) { errors.push({ gameId, err }); }
     }
     this.pool.clear();
-    if (errors.length > 0) console.error('PieceStorePool.closeAll(): errors:', errors);
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors.map(e => e.err),
+        `PieceStorePool.closeAll(): ${errors.length} store(s) failed to close: ${errors.map(e => e.gameId).join(', ')}`,
+      );
+    }
   }
 
   /** Absolute path for the given game's DB file. */
