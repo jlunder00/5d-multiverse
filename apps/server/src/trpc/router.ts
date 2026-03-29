@@ -34,8 +34,13 @@ import {
   SpacetimeCoord,
 } from '@5d/types';
 import { SqlitePieceStore } from '../piece-store/sqlite-adapter.js';
+import { mkdirSync } from 'fs';
 
-function getPieceDbDir() { return process.env['PIECE_DB_DIR'] ?? './pieces'; }
+function getPieceDbDir() {
+  const dir = process.env['PIECE_DB_DIR'] ?? './pieces';
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 function makeGameId(): string {
   return `game-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
