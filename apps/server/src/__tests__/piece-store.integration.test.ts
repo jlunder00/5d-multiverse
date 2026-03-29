@@ -702,4 +702,86 @@ describe('SqlitePieceStore', () => {
       expect(store.getPiecesOnBoard('game-B', 'TL0', 1).map(p => p.realPieceId)).toEqual(['pB']);
     });
   });
+
+  // ── disambiguator auto-assignment ──────────────────────────────────────────
+
+  describe('disambiguator auto-assignment', () => {
+    it('movePiece: two pieces of same owner/type can share a region without UNIQUE violation', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2'), coord: makeCoord('TL0', 1, 'R2') },
+      ]);
+      // Moving p2 into R1 (where p1 sits at disambiguator=0) must not throw
+      expect(() =>
+        store.movePiece(GAME, pid('p2'), { region: regionId('R1') })
+      ).not.toThrow();
+      const atR1 = store.getPiecesOnBoard(GAME, 'TL0', 1).filter(p => p.region === 'R1');
+      expect(atR1).toHaveLength(2);
+      // Disambiguators must be distinct
+      const disams = atR1.map(p => p.disambiguator).sort();
+      expect(disams[0]).not.toBe(disams[1]);
+    });
+
+    it('addPiece: second piece of same owner/type in same region gets a distinct disambiguator', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+      ]);
+      // Caller passes disambiguator=0 (engine always does); store must auto-assign a free one
+      expect(() =>
+        store.addPiece(
+          GAME,
+          makeState('p2'),
+          makeCoord('TL0', 1, 'R1'),  // coord.disambiguator = 0, same as p1
+        )
+      ).not.toThrow();
+      const atR1 = store.getPiecesOnBoard(GAME, 'TL0', 1).filter(p => p.region === 'R1');
+      expect(atR1).toHaveLength(2);
+      const disams = atR1.map(p => p.disambiguator).sort();
+      expect(disams[0]).not.toBe(disams[1]);
+    });
+
+    it('movePiece: piece gets correct disambiguator after gap left by a departed piece', () => {
+      // Set up 3 pieces at R1 (disambiguators 0, 1, 2 after insert order)
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p3'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p4'), coord: makeCoord('TL0', 1, 'R2') },
+      ]);
+      // Remove the middle piece, creating a gap
+      store.removePiece(GAME, pid('p2'));
+      // Now move p4 into R1 — must not collide with remaining p1/p3
+      expect(() =>
+        store.movePiece(GAME, pid('p4'), { region: regionId('R1') })
+      ).not.toThrow();
+      const atR1 = store.getPiecesOnBoard(GAME, 'TL0', 1).filter(p => p.region === 'R1');
+      expect(atR1).toHaveLength(3);
+      const disams = atR1.map(p => p.disambiguator).sort((a, b) => a - b);
+      // All must be distinct
+      expect(new Set(disams).size).toBe(3);
+    });
+  });
+
+  // ── historical board visibility ─────────────────────────────────────────────
+
+  describe('getHistoricalPieces after advance', () => {
+    it('getHistoricalPieces returns the pieces that were on the board before advance', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'),
+          coord: makeCoord('TL0', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      // Present board is now T2
+      expect(store.getPiecesOnBoard(GAME, 'TL0', 2)).toHaveLength(2);
+
+      // Historical T1 must also return pieces (currently returns empty — this is the bug)
+      const hist = store.getHistoricalPieces(GAME, 'TL0', 1);
+      expect(hist).toHaveLength(2);
+      // Each historical piece must carry a realPieceId so the router can build PieceInfo
+      expect((hist[0] as { realPieceId?: string }).realPieceId).toBeDefined();
+      expect((hist[1] as { realPieceId?: string }).realPieceId).toBeDefined();
+    });
+  });
 });
