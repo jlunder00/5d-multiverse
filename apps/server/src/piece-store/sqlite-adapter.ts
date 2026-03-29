@@ -42,6 +42,7 @@ interface HistoricalRow {
   type: string;
   disambiguator: number;
   data: string;
+  real_piece_id: string | null;
 }
 
 interface LocationRow {
@@ -114,6 +115,10 @@ export class SqlitePieceStore implements PieceStore {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.db.exec(PIECE_STORE_SCHEMA);
+      // Migrate existing DBs: add real_piece_id to historical_snapshots if missing.
+      try {
+        this.db.exec(`ALTER TABLE historical_snapshots ADD COLUMN real_piece_id TEXT`);
+      } catch { /* column already exists — ignore */ }
     } catch (err) {
       this.db.close();
       throw new Error(
@@ -157,7 +162,7 @@ export class SqlitePieceStore implements PieceStore {
     }));
   }
 
-  getHistoricalPieces(gameId: string, timeline: string, turn: number): HistoricalPieceInfo[] {
+  getHistoricalPieces(gameId: string, timeline: string, turn: number): (HistoricalPieceInfo & { realPieceId?: RealPieceId })[] {
     const rows = this.db.prepare<[string, string, number], HistoricalRow>(
       `SELECT * FROM historical_snapshots
        WHERE game_id = ? AND timeline = ? AND turn = ?
@@ -170,6 +175,7 @@ export class SqlitePieceStore implements PieceStore {
       region: r.region as HistoricalPieceInfo['region'],
       disambiguator: r.disambiguator,
       data: JSON.parse(r.data) as Record<string, unknown>,
+      ...(r.real_piece_id != null ? { realPieceId: r.real_piece_id as RealPieceId } : {}),
     }));
   }
 
@@ -218,18 +224,40 @@ export class SqlitePieceStore implements PieceStore {
       throw new Error(`movePiece: newCoord has no fields set for piece "${realPieceId}" in game "${gameId}"`);
     }
 
-    // Build a single UPDATE for atomicity — avoids intermediate PK violations
-    // when multiple fields change simultaneously (e.g., region + timeline).
+    // Read current row to determine owner/type and destination for disambiguator computation.
+    const current = this.db.prepare<[string, string], PresentRow>(
+      `SELECT * FROM present_positions WHERE game_id = ? AND real_piece_id = ?`
+    ).get(gameId, realPieceId);
+    if (!current) throw new Error(`movePiece: piece "${realPieceId}" not found in present_positions for game "${gameId}"`);
+
+    const destTimeline = timeline ?? current.timeline;
+    const destTurn = turn ?? current.turn;
+    const destRegion = region ?? current.region;
+    const locationChanging =
+      destTimeline !== current.timeline || destTurn !== current.turn || destRegion !== current.region;
+
+    // Recompute disambiguator at destination using MAX+1 to survive gaps left by departing pieces.
+    let disambiguator = current.disambiguator;
+    if (locationChanging) {
+      const maxRow = this.db.prepare<[string, string, number, string, string, string], { m: number | null }>(
+        `SELECT MAX(disambiguator) AS m FROM present_positions
+         WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
+      ).get(gameId, destTimeline, destTurn, destRegion, current.owner, current.type);
+      disambiguator = maxRow?.m != null ? maxRow.m + 1 : 0;
+    }
+
+    // Build a single UPDATE for atomicity.
     const sets: string[] = [];
     const vals: unknown[] = [];
-    if (region !== undefined)   { sets.push('region = ?');   vals.push(region); }
-    if (timeline !== undefined) { sets.push('timeline = ?'); vals.push(timeline); }
-    if (turn !== undefined)     { sets.push('turn = ?');     vals.push(turn); }
+    if (region !== undefined)        { sets.push('region = ?');        vals.push(region); }
+    if (timeline !== undefined)      { sets.push('timeline = ?');      vals.push(timeline); }
+    if (turn !== undefined)          { sets.push('turn = ?');          vals.push(turn); }
+    if (disambiguator !== current.disambiguator) { sets.push('disambiguator = ?'); vals.push(disambiguator); }
 
     const rpp = this.db.prepare(
       `UPDATE present_positions SET ${sets.join(', ')} WHERE game_id = ? AND real_piece_id = ?`
     ).run(...(vals as string[]), gameId, realPieceId);
-    if (rpp.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not found in present_positions for game "${gameId}"`);
+    if (rpp.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not found in present_positions (second read) for game "${gameId}"`);
 
     const rpl = this.db.prepare(
       `UPDATE piece_locations SET ${sets.join(', ')} WHERE game_id = ? AND real_piece_id = ?`
@@ -265,18 +293,25 @@ export class SqlitePieceStore implements PieceStore {
        VALUES (?, ?, ?, ?, ?)`
     ).run(gameId, state.id, state.owner, state.type, JSON.stringify(state.data));
 
+    // Auto-assign disambiguator: MAX+1 avoids collisions even when prior pieces departed (gaps).
+    const maxRow = this.db.prepare<[string, string, number, string, string, string], { m: number | null }>(
+      `SELECT MAX(disambiguator) AS m FROM present_positions
+       WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
+    ).get(gameId, coord.timeline, coord.turn, coord.region, coord.owner, coord.type);
+    const disambiguator = maxRow?.m != null ? maxRow.m + 1 : 0;
+
     this.db.prepare(
       `INSERT OR REPLACE INTO present_positions
          (game_id, timeline, turn, region, owner, type, disambiguator, real_piece_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(gameId, coord.timeline, coord.turn, coord.region, coord.owner, coord.type,
-      coord.disambiguator, state.id);
+      disambiguator, state.id);
 
     this.db.prepare(
       `INSERT OR REPLACE INTO piece_locations
          (game_id, real_piece_id, timeline, turn, region, disambiguator)
        VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(gameId, state.id, coord.timeline, coord.turn, coord.region, coord.disambiguator);
+    ).run(gameId, state.id, coord.timeline, coord.turn, coord.region, disambiguator);
   }
 
   // ── Turn lifecycle ─────────────────────────────────────────────────────────
@@ -303,8 +338,8 @@ export class SqlitePieceStore implements PieceStore {
 
       const insertSnapshot = this.db.prepare(
         `INSERT OR REPLACE INTO historical_snapshots
-           (game_id, timeline, turn, region, owner, type, disambiguator, data)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+           (game_id, timeline, turn, region, owner, type, disambiguator, data, real_piece_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
 
       const insertPresent = this.db.prepare(
@@ -319,8 +354,8 @@ export class SqlitePieceStore implements PieceStore {
 
       for (const rows of groups.values()) {
         rows.forEach((row, i) => {
-          // Snapshot for outgoing turn
-          insertSnapshot.run(gameId, tl, fromTurn, row.region, row.owner, row.type, i, row.piece_data);
+          // Snapshot for outgoing turn — store real_piece_id for UI historical rendering
+          insertSnapshot.run(gameId, tl, fromTurn, row.region, row.owner, row.type, i, row.piece_data, row.real_piece_id);
           // New present for next turn
           insertPresent.run(gameId, tl, nextTurn, row.region, row.owner, row.type, i, row.real_piece_id);
           updateLocation.run(nextTurn, gameId, row.real_piece_id);
@@ -402,13 +437,13 @@ export class SqlitePieceStore implements PieceStore {
       }
 
       // 3. Place the traveler at destRegion on the new timeline (original ID).
-      //    Disambiguator = number of same-owner/type pieces already at destRegion.
-      const countRow = this.db.prepare<[string, string, number, string, string, string], { n: number }>(
-        `SELECT COUNT(*) AS n FROM present_positions
+      //    Use MAX+1 so gaps left by departed pieces never cause collisions.
+      const maxRow = this.db.prepare<[string, string, number, string, string, string], { m: number | null }>(
+        `SELECT MAX(disambiguator) AS m FROM present_positions
          WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
       ).get(gameId, newTimelineId, originTurn, travelerDestRegion as string,
             travelerState.owner as string, travelerState.type as string);
-      const travelerDisambiguator = countRow?.n ?? 0;
+      const travelerDisambiguator = maxRow?.m != null ? maxRow.m + 1 : 0;
 
       insertPresent.run(
         gameId, newTimelineId, originTurn,

@@ -209,18 +209,46 @@ export const appRouter = router({
         activePlayer,
       );
 
+      // Determine the current (max) turn for each timeline so we can route
+      // past boards to historical_snapshots instead of present_positions.
+      const timelineMaxTurn = new Map<string, number>();
+      for (const [, board] of filtered.boards) {
+        const tl = board.address.timeline as string;
+        const t = board.address.turn as number;
+        if ((timelineMaxTurn.get(tl) ?? -1) < t) timelineMaxTurn.set(tl, t);
+      }
+
       return {
-        boards: [...filtered.boards.entries()].map(([key, board]) => ({
-          key,
-          address: board.address,
-          regions: [...board.regions.entries()],
-          pieces: state.pieceStore
-            ? state.pieceStore.getPiecesOnBoard(state.gameId, board.address.timeline as string, board.address.turn as number)
-            : [],
-          economies: [...board.economies.entries()],
-          pluginData: board.pluginData,
-          inStabilizationPeriod: state.branchTree.nodes[board.address.timeline as string]?.inStabilizationPeriod ?? false,
-        })),
+        boards: [...filtered.boards.entries()].map(([key, board]) => {
+          const tl = board.address.timeline as string;
+          const t = board.address.turn as number;
+          const isCurrent = timelineMaxTurn.get(tl) === t;
+          let pieces: import('@5d/types').PieceInfo[] = [];
+          if (state.pieceStore) {
+            if (isCurrent) {
+              pieces = state.pieceStore.getPiecesOnBoard(state.gameId, tl, t);
+            } else {
+              pieces = state.pieceStore.getHistoricalPieces(state.gameId, tl, t)
+                .map((h, i) => ({
+                  realPieceId: (h.realPieceId ?? `hist:${tl}:${t}:${h.region as string}:${h.owner as string}:${h.type as string}:${i}`) as import('@5d/types').RealPieceId,
+                  owner: h.owner,
+                  type: h.type,
+                  region: h.region,
+                  disambiguator: h.disambiguator,
+                  data: h.data,
+                }));
+            }
+          }
+          return {
+            key,
+            address: board.address,
+            regions: [...board.regions.entries()],
+            pieces,
+            economies: [...board.economies.entries()],
+            pluginData: board.pluginData,
+            inStabilizationPeriod: state.branchTree.nodes[tl]?.inStabilizationPeriod ?? false,
+          };
+        }),
         branchInfo: Object.values(state.branchTree.nodes).map((node) => ({
           timelineId: node.timelineId as string,
           parentTimelineId: node.parentTimelineId as string | null,
