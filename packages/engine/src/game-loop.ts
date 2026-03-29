@@ -95,6 +95,25 @@ export function processAction(
     destNodeForChecks?.inStabilizationPeriod === true &&
     destNodeForChecks.parentTimelineId === (address.timeline as string);
 
+  // For direct arrivals, validate that the target turn is the latest board on the destination
+  // timeline. A stabilizing timeline may have accumulated multiple boards (e.g. T1 and T2)
+  // via advanceAllTimelines; only the current (latest) board accepts new arrivals.
+  if (isDirectArrivalFromParent) {
+    let latestDestTurn = -Infinity;
+    for (const [, board] of state.world.boards) {
+      if ((board.address.timeline as string) === (action.to.timeline as string)) {
+        const t = board.address.turn as number;
+        if (t > latestDestTurn) latestDestTurn = t;
+      }
+    }
+    if ((action.to.turn as number) !== latestDestTurn) {
+      throw new Error(
+        `Cannot arrive at ${action.to.timeline as string}:T${action.to.turn as number} during its formation window — ` +
+        `only the current board T${latestDestTurn} accepts new arrivals`,
+      );
+    }
+  }
+
   // Cross-board checks only apply when action.to refers to a different board than the
   // submitted-on board. Intra-board actions (e.g. spatial moves) must not be subject
   // to time-travel or reachability checks.
