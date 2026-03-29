@@ -30,11 +30,8 @@ function buildActionId() {
   return `action-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-function parseEntities(raw: [string, unknown][]): PieceInfo[] {
-  return raw.map(([id, e]) => {
-    const ent = e as { owner: string; type: string; location: { region: string } };
-    return { id, owner: ent.owner, type: ent.type, region: ent.location.region };
-  });
+function parsePieces(raw: { realPieceId: string; owner: string; type: string; region: string }[]): PieceInfo[] {
+  return raw.map((p) => ({ id: p.realPieceId, owner: p.owner, type: p.type, region: p.region }));
 }
 
 function parseRegions(raw: [string, unknown][]): RegionInfo[] {
@@ -133,15 +130,14 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       (b.address.timeline as string) === selectedPiece.fromBoard.timelineId &&
       (b.address.turn as number) === selectedPiece.fromBoard.turn
     );
-    const entry = board?.entities.find(([id]) => id === selectedPiece.id);
-    const loc = (entry?.[1] as { location?: { region?: string } } | undefined)?.location;
-    return loc?.region ?? selectedPiece.fromRegion;
+    const piece = board?.pieces.find((p: { realPieceId: string }) => p.realPieceId === selectedPiece.id);
+    return (piece as { region?: string } | undefined)?.region ?? selectedPiece.fromRegion;
   })();
 
   const cells: BoardCell[] = data.boards.map((b) => {
     const tl = b.address.timeline as string;
     const t = b.address.turn as number;
-    const pieces = parseEntities(b.entities);
+    const pieces = parsePieces(b.pieces ?? []);
     const regions = parseRegions(b.regions);
     const inStabilizationPeriod = b.inStabilizationPeriod ?? false;
 
@@ -194,20 +190,20 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
       !b.inStabilizationPeriod &&
       (b.address.timeline as string) === cell.timelineId &&
       (b.address.turn as number) === tlPresent &&
-      b.entities.some(([id]) => id === pieceId)
+      (b.pieces ?? []).some((p: { realPieceId: string }) => p.realPieceId === pieceId)
     );
     console.log('[pieceClick] activeBoard:', activeBoard ? `${activeBoard.address.timeline as string}:T${activeBoard.address.turn as number}` : 'NOT FOUND', 'boards searched:', data.boards.length);
     if (!activeBoard) { console.log('[pieceClick] blocked: no activeBoard at turn', tlPresent, 'boards:', data.boards.map(b => `${b.address.timeline as string}:T${b.address.turn as number}`)); return; }
-    const activeEntry = activeBoard.entities.find(([id]) => id === pieceId);
-    const activeLoc = (activeEntry?.[1] as { location?: { region?: string } } | undefined)?.location;
-    console.log('[pieceClick] activeLoc:', activeLoc);
-    if (!activeLoc?.region) { console.log('[pieceClick] blocked: no region on activeEntry'); return; }
+    const activePiece = (activeBoard.pieces ?? []).find((p: { realPieceId: string }) => p.realPieceId === pieceId);
+    const activeRegion = (activePiece as { region?: string } | undefined)?.region;
+    console.log('[pieceClick] activeRegion:', activeRegion);
+    if (!activeRegion) { console.log('[pieceClick] blocked: no region on activePiece'); return; }
 
     setSelectedPiece({
       id: pieceId,
       owner: piece.owner,
       fromBoard: { timelineId: cell.timelineId, turn: tlPresent },
-      fromRegion: activeLoc.region,
+      fromRegion: activeRegion,
     });
   }
 
