@@ -123,18 +123,18 @@ export const appRouter = router({
       const pieceDbPath = `${getPieceDbDir()}/${id}.db`;
       const pieceStore = new SqlitePieceStore(pieceDbPath);
 
-      // Seed initial pieces from the plugin's initial board
-      for (const piece of initialBoard.pieces) {
-        const coord: SpacetimeCoord = {
+      // Seed initial pieces from the plugin's initial board (all-or-nothing via initGame)
+      pieceStore.initGame(id, initialBoard.pieces.map((piece) => ({
+        state: { id: piece.realPieceId, owner: piece.owner, type: piece.type, data: piece.data },
+        coord: {
           timeline: initialBoard.address.timeline as string,
           turn: initialBoard.address.turn as number,
           region: piece.region,
           owner: piece.owner,
           type: piece.type,
           disambiguator: piece.disambiguator,
-        };
-        pieceStore.addPiece(id, { id: piece.realPieceId, owner: piece.owner, type: piece.type, data: piece.data }, coord);
-      }
+        },
+      })));
 
       const state: GameLoopState = {
         world,

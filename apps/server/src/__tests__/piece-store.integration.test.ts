@@ -309,22 +309,52 @@ describe('SqlitePieceStore', () => {
         travelerDestRegion: regionId('R3'),
       });
 
-      // New timeline should have bootstrapped copies of TL0 turn 1 pieces
-      // plus the traveler placed in R3
+      // New timeline should have:
+      //   - historical clone of p1 at R1 (new ID — bootstrap paradox self-copy)
+      //   - historical clone of p2 at R2 (new ID)
+      //   - the traveler p1 at R3 (original ID)
       const newBoard = store.getPiecesOnBoard(GAME, 'TL1', 1);
-      // p1 (traveler) is in R3; p2's copy is in R2 (bootstrapped)
-      expect(newBoard).toHaveLength(2);
+      expect(newBoard).toHaveLength(3);
 
       const traveler = newBoard.find(p => p.realPieceId === 'p1');
       expect(traveler).toBeDefined();
       expect(traveler!.region).toBe('R3');
 
-      // Bootstrapped copy of p2 has a NEW realPieceId (not 'p2')
-      const copy = newBoard.find(p => p.realPieceId !== 'p1');
-      expect(copy).toBeDefined();
-      expect(copy!.realPieceId).not.toBe('p2');
-      expect(copy!.type).toBe('cavalry');
-      expect(copy!.region).toBe('R2');
+      // Historical clone of p1 at original position R1 (new ID — bootstrap paradox)
+      const p1Clone = newBoard.find(p => p.realPieceId !== 'p1' && p.owner === 'player1');
+      expect(p1Clone).toBeDefined();
+      expect(p1Clone!.region).toBe('R1');
+
+      // Historical clone of p2 has a NEW realPieceId (not 'p2')
+      const p2Clone = newBoard.find(p => p.type === 'cavalry');
+      expect(p2Clone).toBeDefined();
+      expect(p2Clone!.realPieceId).not.toBe('p2');
+      expect(p2Clone!.region).toBe('R2');
+    });
+
+    it('createBranch succeeds when traveler has moved since originTurn', () => {
+      store.initGame(GAME, [
+        { state: makeState('p1'), coord: makeCoord('TL0', 1, 'R1') },
+        { state: makeState('p2', 'player2', 'cavalry'), coord: makeCoord('TL0', 1, 'R2', 'player2', 'cavalry') },
+      ]);
+      store.advanceAllTimelines(GAME, [{ timeline: 'TL0', fromTurn: 1 }]);
+
+      // p1 moves to R3 after the snapshot — createBranch must not use current region for matching
+      store.movePiece(GAME, pid('p1'), { region: regionId('R3') });
+
+      store.createBranch(GAME, {
+        originTimeline: 'TL0',
+        originTurn: 1,
+        newTimelineId: 'TL1',
+        travelerId: pid('p1'),
+        travelerDestRegion: regionId('R4'),
+      });
+
+      // Should produce 3 pieces: p1 historical clone at R1, p2 clone at R2, traveler at R4
+      const newBoard = store.getPiecesOnBoard(GAME, 'TL1', 1);
+      expect(newBoard).toHaveLength(3);
+      expect(newBoard.find(p => p.realPieceId === 'p1')?.region).toBe('R4');
+      expect(newBoard.find(p => p.owner === 'player1' && p.realPieceId !== 'p1')?.region).toBe('R1');
     });
 
     it('traveler keeps its original realPieceId on the new timeline', () => {

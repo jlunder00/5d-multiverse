@@ -359,7 +359,6 @@ export class SqlitePieceStore implements PieceStore {
          ORDER BY region, owner, type, disambiguator`
       ).all(gameId, originTimeline, originTurn);
 
-      // Precondition guards
       const travelerState = this.getPieceState(gameId, travelerId);
       if (!travelerState) throw new Error(`createBranch: travelerId "${travelerId}" not in pieces table`);
 
@@ -372,8 +371,6 @@ export class SqlitePieceStore implements PieceStore {
         throw new Error(`createBranch: no historical snapshot at (${originTimeline}, ${originTurn})`);
       }
 
-      // 2. Bootstrap new timeline: mint new RealPieceIds for each snapshot piece
-      //    except the traveler (which keeps its own ID)
       const insertPiece = this.db.prepare(
         `INSERT OR IGNORE INTO pieces (game_id, real_piece_id, owner, type, data)
          VALUES (?, ?, ?, ?, ?)`
@@ -389,62 +386,43 @@ export class SqlitePieceStore implements PieceStore {
          VALUES (?, ?, ?, ?, ?, ?)`
       );
 
-      let travelerPlaced = false;
-
+      // 2. Bootstrap: clone ALL snapshot pieces with new IDs, including the traveler's
+      //    historical self. This preserves the bootstrap paradox — the traveler's past
+      //    copy and the arriving traveler coexist on the new timeline.
       for (const snap of snapshots) {
-        // Match snapshot row to traveler slot by (region, owner, type, disambiguator)
-        // using the source location captured before any writes.
-        // Match on (region, owner, type, disambiguator). region+disambiguator alone is not
-        // unique — multiple pieces can share a region with the same disambiguator but different
-        // owner/type. owner and type come from travelerState (current pieces row) because
-        // piece_locations doesn't store them; they're safe to use because owner and type are
-        // immutable via the PieceStore API (only settable at addPiece time).
-        const isTravelerSlot =
-          snap.region === sourceLoc.region &&
-          snap.owner === travelerState.owner &&
-          snap.type === travelerState.type &&
-          snap.disambiguator === sourceLoc.disambiguator;
-
-        if (isTravelerSlot) {
-          // Traveler goes to dest region on new timeline — keeps its own ID
-          insertPresent.run(
-            gameId, newTimelineId, originTurn,
-            travelerDestRegion, snap.owner, snap.type, snap.disambiguator, travelerId,
-          );
-          insertLocation.run(
-            gameId, travelerId, newTimelineId, originTurn,
-            travelerDestRegion, snap.disambiguator,
-          );
-          travelerPlaced = true;
-        } else {
-          // Bootstrap: mint a new RealPieceId for this historical piece
-          const newId = randomUUID() as RealPieceId;
-          insertPiece.run(gameId, newId, snap.owner, snap.type, snap.data);
-          insertPresent.run(
-            gameId, newTimelineId, originTurn,
-            snap.region, snap.owner, snap.type, snap.disambiguator, newId,
-          );
-          insertLocation.run(
-            gameId, newId, newTimelineId, originTurn, snap.region, snap.disambiguator,
-          );
-        }
-      }
-
-      if (!travelerPlaced) {
-        throw new Error(
-          `createBranch: traveler slot not found in snapshot at (${originTimeline}, ${originTurn}). ` +
-          `Traveler "${travelerId}": sourceLoc=(region=${sourceLoc.region}, dis=${sourceLoc.disambiguator}), ` +
-          `owner=${travelerState.owner}, type=${travelerState.type}. ` +
-          `Snapshot had ${snapshots.length} row(s).`,
+        const newId = randomUUID() as RealPieceId;
+        insertPiece.run(gameId, newId, snap.owner, snap.type, snap.data);
+        insertPresent.run(
+          gameId, newTimelineId, originTurn,
+          snap.region, snap.owner, snap.type, snap.disambiguator, newId,
+        );
+        insertLocation.run(
+          gameId, newId, newTimelineId, originTurn, snap.region, snap.disambiguator,
         );
       }
 
-      // 3. Remove traveler from its SOURCE board only (not from the new timeline)
+      // 3. Place the traveler at destRegion on the new timeline (original ID).
+      //    Disambiguator = number of same-owner/type pieces already at destRegion.
+      const countRow = this.db.prepare<[string, string, number, string, string, string], { n: number }>(
+        `SELECT COUNT(*) AS n FROM present_positions
+         WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
+      ).get(gameId, newTimelineId, originTurn, travelerDestRegion as string,
+            travelerState.owner as string, travelerState.type as string);
+      const travelerDisambiguator = countRow?.n ?? 0;
+
+      insertPresent.run(
+        gameId, newTimelineId, originTurn,
+        travelerDestRegion, travelerState.owner, travelerState.type, travelerDisambiguator, travelerId,
+      );
+      insertLocation.run(
+        gameId, travelerId, newTimelineId, originTurn, travelerDestRegion, travelerDisambiguator,
+      );
+
+      // 4. Remove traveler from its source board (it traveled away).
       this.db.prepare(
         `DELETE FROM present_positions
          WHERE game_id = ? AND real_piece_id = ? AND timeline = ? AND turn = ?`
       ).run(gameId, travelerId, sourceLoc.timeline, sourceLoc.turn);
-      // piece_locations for the traveler was already updated by insertLocation above
     });
 
     create();
