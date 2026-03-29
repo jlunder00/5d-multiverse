@@ -22,7 +22,6 @@ import {
   createMovementTools,
   createDiceTools,
   createAdjudicationTools,
-  setBoard,
   GameLoopState,
 } from '@5d/engine';
 import {
@@ -31,7 +30,12 @@ import {
   BranchWindow,
   ActionSchema,
   boardKey,
+  RealPieceId,
+  SpacetimeCoord,
 } from '@5d/types';
+import { SqlitePieceStore } from '../piece-store/sqlite-adapter.js';
+
+function getPieceDbDir() { return process.env['PIECE_DB_DIR'] ?? './pieces'; }
 
 function makeGameId(): string {
   return `game-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -58,7 +62,7 @@ function loadGameState(row: typeof games.$inferSelect): GameLoopState {
     windows,
     winner: (row.winner as PlayerId | null) ?? null,
     gameId: row.id,
-    pieceStore: undefined,
+    pieceStore: new SqlitePieceStore(row.pieceDbPath),
   };
 }
 
@@ -69,6 +73,7 @@ function persistGameState(
   players: PlayerId[],
   settings: Record<string, unknown>,
   state: GameLoopState,
+  pieceDbPath: string,
 ) {
   return {
     id,
@@ -81,6 +86,7 @@ function persistGameState(
     executionOrder: JSON.stringify(state.order),
     windows: serializeWindows(state.windows),
     winner: state.winner ?? null,
+    pieceDbPath,
     updatedAt: Date.now(),
   };
 }
@@ -108,6 +114,23 @@ export const appRouter = router({
       const boards = new Map([[boardKey(initialBoard.address), initialBoard]]);
       const world = { boards };
       const order = createExecutionOrder(players, 1 as ReturnType<typeof createExecutionOrder>['globalTurn']);
+
+      const pieceDbPath = `${getPieceDbDir()}/${id}.db`;
+      const pieceStore = new SqlitePieceStore(pieceDbPath);
+
+      // Seed initial pieces from the plugin's initial board
+      for (const piece of initialBoard.pieces) {
+        const coord: SpacetimeCoord = {
+          timeline: initialBoard.address.timeline as string,
+          turn: initialBoard.address.turn as number,
+          region: piece.region,
+          owner: piece.owner,
+          type: piece.type,
+          disambiguator: piece.disambiguator,
+        };
+        pieceStore.addPiece(id, { id: piece.realPieceId, owner: piece.owner, type: piece.type, data: piece.data }, coord);
+      }
+
       const state: GameLoopState = {
         world,
         branchTree: {
@@ -133,11 +156,11 @@ export const appRouter = router({
         windows: new Map(),
         winner: null,
         gameId: id,
-        pieceStore: undefined,
+        pieceStore,
       };
 
       await ctx.db.insert(games).values({
-        ...persistGameState(id, input.gameId, 'active', players, input.settings, state),
+        ...persistGameState(id, input.gameId, 'active', players, input.settings, state, pieceDbPath),
         createdAt: Date.now(),
       });
 
@@ -186,8 +209,9 @@ export const appRouter = router({
           key,
           address: board.address,
           regions: [...board.regions.entries()],
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          entities: [...((board as any).entities?.entries() ?? [])],
+          pieces: state.pieceStore
+            ? state.pieceStore.getPiecesOnBoard(state.gameId, board.address.timeline as string, board.address.turn as number)
+            : [],
           economies: [...board.economies.entries()],
           pluginData: board.pluginData,
           inStabilizationPeriod: state.branchTree.nodes[board.address.timeline as string]?.inStabilizationPeriod ?? false,
@@ -262,7 +286,7 @@ export const appRouter = router({
 
       await ctx.db
         .update(games)
-        .set(persistGameState(row.id, row.gameId, status, players, settings, state))
+        .set(persistGameState(row.id, row.gameId, status, players, settings, state, row.pieceDbPath))
         .where(eq(games.id, input.gameId));
 
       await ctx.db.insert(actions).values({
@@ -305,7 +329,8 @@ export const appRouter = router({
       );
 
       if (state.order.globalTurn > prevGlobalTurn) {
-        state = { ...state, world: advanceAllTimelines(state.world) };
+        const newWorld = advanceAllTimelines(state.world, state.pieceStore, state.gameId);
+        state = { ...state, world: newWorld };
       }
 
       const players = JSON.parse(row.players) as PlayerId[];
@@ -313,7 +338,7 @@ export const appRouter = router({
 
       await ctx.db
         .update(games)
-        .set(persistGameState(row.id, row.gameId, row.status, players, settings, state))
+        .set(persistGameState(row.id, row.gameId, row.status, players, settings, state, row.pieceDbPath))
         .where(eq(games.id, input.gameId));
 
       return { globalTurn: state.order.globalTurn, currentPlayer: state.order.priorityQueue[state.order.currentIndex] };

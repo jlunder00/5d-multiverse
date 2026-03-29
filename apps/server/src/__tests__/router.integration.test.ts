@@ -5,13 +5,21 @@
  * (:memory: path) so no file I/O occurs. Tests verify that piece state is
  * persisted through the store rather than the worldState JSON column.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { sql } from 'drizzle-orm';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import * as schema from '../db/schema.js';
 import { appRouter } from '../trpc/router.js';
+import { registerPlugin } from '@5d/engine';
+import { stubPlugin } from '@5d/stub';
 import type { PlayerId } from '@5d/types';
+
+// Register stub plugin for tests (idempotent if already registered)
+try { registerPlugin(stubPlugin); } catch { /* already registered */ }
 
 // ---------------------------------------------------------------------------
 // In-memory DB setup
@@ -47,12 +55,16 @@ function makeTestDb() {
   return db;
 }
 
+function mockReq(playerId?: string) {
+  return { headers: playerId ? { 'x-player-id': playerId } : {} } as any;
+}
+
 function makeCaller(db: ReturnType<typeof makeTestDb>) {
-  return appRouter.createCaller({ db, playerId: undefined });
+  return appRouter.createCaller({ db, req: mockReq(), res: {} as any });
 }
 
 function makePlayerCaller(db: ReturnType<typeof makeTestDb>, playerId: string) {
-  return appRouter.createCaller({ db, playerId: playerId as PlayerId });
+  return appRouter.createCaller({ db, req: mockReq(playerId), res: {} as any });
 }
 
 // ---------------------------------------------------------------------------
@@ -61,9 +73,16 @@ function makePlayerCaller(db: ReturnType<typeof makeTestDb>, playerId: string) {
 
 describe('Phase 4 — router + PieceStore integration', () => {
   let db: ReturnType<typeof makeTestDb>;
+  let tmpDir: string;
 
   beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'piece-store-test-'));
+    process.env['PIECE_DB_DIR'] = tmpDir;
     db = makeTestDb();
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('createGame stores a piece_db_path on the game row', async () => {
