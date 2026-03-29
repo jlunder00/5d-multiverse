@@ -159,12 +159,15 @@ export function processAction(
       const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
       state.pieceStore.addPiece(state.gameId,
         { ...movingPiece, id: arrivedId },
-        { ...movingPieceLoc,
-          timeline: directStabilizingNode.timelineId as string,
+        { timeline: directStabilizingNode.timelineId as string,
           turn: action.to.turn as number,
           region: action.to.region,
+          owner: movingPiece.owner,
+          type: movingPiece.type,
+          disambiguator: 0,
         },
       );
+      state.pieceStore.removePiece(state.gameId, movingPiece.id);
     }
     // Update the dest board's parties list
     const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
@@ -185,12 +188,15 @@ export function processAction(
         const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
         state.pieceStore.addPiece(state.gameId,
           { ...movingPiece, id: arrivedId },
-          { ...movingPieceLoc,
-            timeline: existingBranchNode.timelineId as string,
+          { timeline: existingBranchNode.timelineId as string,
             turn: stabilizationStartTurn,
             region: action.to.region,
+            owner: movingPiece.owner,
+            type: movingPiece.type,
+            disambiguator: 0,
           },
         );
+        state.pieceStore.removePiece(state.gameId, movingPiece.id);
       }
       // Update the dest board's parties list
       const stabilizationStartTurn = originAddress.turn as Turn;

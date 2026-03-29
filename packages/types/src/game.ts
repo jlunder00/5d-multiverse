@@ -47,7 +47,7 @@ export interface ActionContext {
   halfActionBranchId: BranchId | undefined;
   /**
    * Piece store for direct mutations by the plugin evaluator.
-   * Undefined until Phase 3 wires it in; plugins may guard with `if (context.pieceStore)`.
+   * Undefined until Phase 4 wires the server; plugins may guard with `if (context.pieceStore)`.
    */
   pieceStore: PieceStore | undefined;
   /** Game ID for PieceStore calls. Populated from GameLoopState.gameId in buildContext. */
