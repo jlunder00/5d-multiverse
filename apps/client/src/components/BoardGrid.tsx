@@ -45,28 +45,45 @@ export interface BoardGridProps {
   onRegionClick?: (regionId: string, cell: BoardCell) => void;
 }
 
-// Grid geometry constants (must match CSS below).
-// Cell size: 7rem = 112px. Row gap: 12px (gap-y-3). Col gap: 4px (gap-x-1). Padding: 8px (p-2).
-// Header row: 1.5rem = 24px. Label col: 4rem = 64px.
+// ── Grid geometry ────────────────────────────────────────────────────────────
+// Board cells are 7rem (112px) square.
+// Between each pair of columns is a GUTTER — a narrow column where arrows travel.
+// Layout per turn: [board_col][gutter_col][board_col][gutter_col]...
+// The gutter gives arrows room to diverge without overlapping boards.
 const CELL_W = 112;
 const CELL_H = 112;
-const GAP_X = 4;
-const GAP_Y = 12;
-const PAD = 8;
-const HEADER_H = 24;
-const LABEL_W = 64;
-const COL_STRIDE = CELL_W + GAP_X; // 116
-const ROW_STRIDE = CELL_H + GAP_Y; // 124
+const GUTTER_W = 48;   // width of arrow gutter between board columns
+const GAP_Y = 12;      // vertical gap between timeline rows (gap-y-3)
+const PAD = 8;          // padding around grid (p-2)
+const HEADER_H = 24;    // height of turn-label row (1.5rem)
+const LABEL_W = 64;     // width of timeline-label column (4rem)
+const COL_STRIDE = CELL_W + GUTTER_W; // 160px per turn (board + gutter)
+const ROW_STRIDE = CELL_H + GAP_Y;    // 124px per timeline
 
-/** Pixel centre of cell at (rowIndex, turnIndex), both 0-based. */
+/** Pixel centre of a board cell at (rowIndex, turnIndex), both 0-based. */
 function cellCenter(row: number, col: number) {
   return {
-    x: PAD + LABEL_W + GAP_X + col * COL_STRIDE + CELL_W / 2,
+    x: PAD + LABEL_W + col * COL_STRIDE + CELL_W / 2,
     y: PAD + HEADER_H + GAP_Y + row * ROW_STRIDE + CELL_H / 2,
   };
 }
 
-const COL_WIDTH = COL_STRIDE; // kept for scroll helper
+/** Right edge of a board cell (where an outgoing arrow starts). */
+function cellRight(row: number, col: number) {
+  const c = cellCenter(row, col);
+  return { x: c.x + CELL_W / 2, y: c.y };
+}
+
+/** Left edge of a board cell (where an incoming arrow ends). */
+function cellLeft(row: number, col: number) {
+  const c = cellCenter(row, col);
+  return { x: c.x - CELL_W / 2, y: c.y };
+}
+
+/** Centre of the gutter strip to the RIGHT of column `col`. */
+function gutterCenter(col: number) {
+  return PAD + LABEL_W + col * COL_STRIDE + CELL_W + GUTTER_W / 2;
+}
 
 // Stable player→color mapping by hashing the player ID
 const PALETTE = ['#3b82f6', '#ef4444', '#22c55e', '#eab308', '#a855f7', '#f97316', '#06b6d4'];
@@ -74,6 +91,124 @@ function playerColor(playerId: string): string {
   let h = 0;
   for (const c of playerId) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
   return PALETTE[h % PALETTE.length]!;
+}
+
+// ── Connector path computation ───────────────────────────────────────────────
+
+interface Connector {
+  /** SVG <path> d attribute */
+  d: string;
+  /** Whether this connector represents a branch divergence (vs. same-timeline continuation) */
+  isBranch: boolean;
+}
+
+/**
+ * Build the SVG connector paths for the entire grid.
+ *
+ * There are two kinds of connectors:
+ *   1. **Continuation arrows**: horizontal [board]──→[board] within the same timeline.
+ *      These travel through the gutter between two consecutive board columns.
+ *   2. **Branch arrows**: at a branch point, the continuation arrow from the parent
+ *      board splits — one fork continues right to the next parent board, the other
+ *      diverges diagonally down (or up) through the gutter into the child timeline's
+ *      origin board.
+ *
+ * All paths route through the gutter strip so they never overlap board cells.
+ *
+ * @param timelines   Ordered list of timeline IDs (row 0 = first timeline)
+ * @param maxTurn     Number of turn columns
+ * @param cellExists  Check whether a board exists at (timelineId, turn)
+ * @param branchInfo  Branch parent/child relationships
+ * @returns Array of Connector objects (each has an SVG `d` string and a type flag)
+ */
+function buildConnectors(
+  timelines: string[],
+  maxTurn: number,
+  cellExists: (timelineId: string, turn: number) => boolean,
+  branchInfo: BranchInfo[],
+): { connectors: Connector[]; forkDots: { x: number; y: number }[] } {
+  const rowOf = new Map(timelines.map((tl, i) => [tl, i]));
+
+  // Build lookup: for each (parentTimeline, divergedAtTurn), which child timelines branch off?
+  const branchesAt = new Map<string, BranchInfo[]>();
+  for (const b of branchInfo) {
+    if (b.parentTimelineId == null || b.divergedAtTurn == null) continue;
+    const key = `${b.parentTimelineId}:${b.divergedAtTurn}`;
+    if (!branchesAt.has(key)) branchesAt.set(key, []);
+    branchesAt.get(key)!.push(b);
+  }
+
+  const connectors: Connector[] = [];
+  const forkDots: { x: number; y: number }[] = [];
+
+  for (const tl of timelines) {
+    const row = rowOf.get(tl)!;
+
+    for (let turn = 1; turn < maxTurn; turn++) {
+      const col = turn - 1;       // 0-based column of current turn
+      const nextCol = col + 1;    // 0-based column of turn+1
+      const hasNext = cellExists(tl, turn + 1);
+      const hasCurrent = cellExists(tl, turn);
+      if (!hasCurrent) continue;
+
+      // Which child timelines branch off at turn+1 FROM this timeline?
+      // (divergedAtTurn = turn+1 means the new TL's first board is at col nextCol,
+      //  and the causal arrow comes from the board at col = turn-1)
+      const children = branchesAt.get(`${tl}:${turn + 1}`) ?? [];
+      const hasFork = children.length > 0;
+
+      // Gutter centre x between col and nextCol
+      const gx = gutterCenter(col);
+      const srcRight = cellRight(row, col);
+
+      if (!hasNext && !hasFork) continue; // dead end, no arrow needed
+
+      if (!hasFork) {
+        // Simple continuation — straight horizontal line through gutter
+        const dstLeft = cellLeft(row, nextCol);
+        connectors.push({
+          d: `M ${srcRight.x} ${srcRight.y} L ${dstLeft.x} ${dstLeft.y}`,
+          isBranch: false,
+        });
+      } else {
+        // Railroad fork: line from board edge to fork dot, then branches out.
+        const forkY = srcRight.y;
+        forkDots.push({ x: gx, y: forkY });
+
+        // Stem: board right edge → fork dot
+        connectors.push({
+          d: `M ${srcRight.x} ${srcRight.y} L ${gx} ${forkY}`,
+          isBranch: false,
+        });
+
+        // Continuation arrow: fork dot → next board on same timeline (if exists)
+        if (hasNext) {
+          const dstLeft = cellLeft(row, nextCol);
+          connectors.push({
+            d: `M ${gx} ${forkY} L ${dstLeft.x} ${dstLeft.y}`,
+            isBranch: false,
+          });
+        }
+
+        // Branch arrows: fork dot → each child timeline's first board
+        for (const child of children) {
+          const childRow = rowOf.get(child.timelineId);
+          if (childRow === undefined) continue;
+          const dstLeft = cellLeft(childRow, nextCol);
+
+          // Quadratic bezier: starts horizontal from fork dot, curves to arrive
+          // horizontally at the child board's left edge.
+          // Control point: (gx, dstLeft.y) — keeps departure horizontal, arrival horizontal.
+          connectors.push({
+            d: `M ${gx} ${forkY} Q ${gx} ${dstLeft.y} ${dstLeft.x} ${dstLeft.y}`,
+            isBranch: true,
+          });
+        }
+      }
+    }
+  }
+
+  return { connectors, forkDots };
 }
 
 export function BoardGrid({
@@ -94,7 +229,6 @@ export function BoardGrid({
     if (e.button !== 0) return;
     const el = scrollRef.current;
     if (!el) return;
-    // Don't capture immediately — wait for actual drag movement so clicks reach children
     panStart.current = { x: e.clientX, y: e.clientY, scrollLeft: el.scrollLeft, scrollTop: el.scrollTop, captured: false };
   }
 
@@ -104,7 +238,6 @@ export function BoardGrid({
     if (!el) return;
     const dx = e.clientX - panStart.current.x;
     const dy = e.clientY - panStart.current.y;
-    // Only activate drag after moving 6px — below that it's a click, not a pan
     if (!panStart.current.captured) {
       if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
       el.setPointerCapture(e.pointerId);
@@ -118,12 +251,24 @@ export function BoardGrid({
     panStart.current = null;
   }
 
-  // Pre-compute row index map for SVG line drawing
-  const rowOf = new Map(timelines.map((tl, i) => [tl, i]));
+  // Build connector paths
+  const { connectors, forkDots } = buildConnectors(
+    timelines,
+    maxTurn,
+    (tl, turn) => cellMap.get(`${tl}:${turn}`)?.exists ?? false,
+    branchInfo,
+  );
 
-  // SVG dimensions (approximate — cells may be wider than 7rem on large screens)
-  const svgW = PAD + LABEL_W + GAP_X + maxTurn * COL_STRIDE + PAD;
+  // SVG dimensions
+  const svgW = PAD + LABEL_W + maxTurn * COL_STRIDE + PAD;
   const svgH = PAD + HEADER_H + GAP_Y + timelines.length * ROW_STRIDE + PAD;
+
+  // Grid template: alternating board columns and gutter columns
+  // [label] [board1] [gutter1] [board2] [gutter2] ... [boardN]
+  // Last column has no trailing gutter.
+  const colTemplate = `${LABEL_W}px ` + Array.from({ length: maxTurn }, (_, i) =>
+    i < maxTurn - 1 ? `${CELL_W}px ${GUTTER_W}px` : `${CELL_W}px`
+  ).join(' ');
 
   return (
     <div
@@ -135,10 +280,9 @@ export function BoardGrid({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      {/* Wrapper gives the SVG overlay a relative anchor */}
       <div className="relative" style={{ minWidth: svgW, minHeight: svgH }}>
 
-      {/* SVG branch-connector overlay — sits above grid, no pointer events */}
+      {/* SVG connector overlay */}
       <svg
         width={svgW}
         height={svgH}
@@ -146,65 +290,60 @@ export function BoardGrid({
         style={{ zIndex: 5 }}
       >
         <defs>
-          <marker id="arrow" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+          <marker id="arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
             <path d="M0,0 L0,6 L6,3 z" fill="#6b7280" />
           </marker>
+          <marker id="arrow-branch" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#a78bfa" />
+          </marker>
         </defs>
-        {branchInfo
-          .filter((b) => b.parentTimelineId !== null && b.divergedAtTurn !== null)
-          .map((b) => {
-            const parentRow = rowOf.get(b.parentTimelineId!);
-            const childRow = rowOf.get(b.timelineId);
-            if (parentRow === undefined || childRow === undefined) return null;
-            const col = (b.divergedAtTurn! - 1); // 0-based column index
-            const src = cellCenter(parentRow, col);
-            const dst = cellCenter(childRow, col);
-            // Line from bottom of parent cell to top of child cell
-            const x = src.x;
-            const y1 = src.y + CELL_H / 2 + 2;
-            const y2 = dst.y - CELL_H / 2 - 2;
-            return (
-              <g key={b.timelineId}>
-                <line
-                  x1={x} y1={y1} x2={x} y2={y2}
-                  stroke="#6b7280"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  markerEnd="url(#arrow)"
-                />
-                {/* Dot at origin */}
-                <circle cx={x} cy={y1} r={3} fill="#6b7280" />
-              </g>
-            );
-          })}
+        {connectors.map((c, i) => (
+          <path
+            key={i}
+            d={c.d}
+            stroke={c.isBranch ? '#a78bfa' : '#6b7280'}
+            strokeWidth={1.5}
+            strokeDasharray={c.isBranch ? '6 3' : undefined}
+            fill="none"
+            markerEnd={c.isBranch ? 'url(#arrow-branch)' : 'url(#arrow)'}
+          />
+        ))}
+        {/* Fork dots — railroad junction points */}
+        {forkDots.map((dot, i) => (
+          <circle key={`dot-${i}`} cx={dot.x} cy={dot.y} r={4} fill="#9ca3af" />
+        ))}
       </svg>
 
       <div
-        className="grid gap-x-1 gap-y-3 p-2"
+        className="grid p-2"
         style={{
-          gridTemplateColumns: `4rem repeat(${maxTurn}, minmax(7rem, 1fr))`,
-          gridTemplateRows: `1.5rem repeat(${timelines.length}, 7rem)`,
+          gridTemplateColumns: colTemplate,
+          gridTemplateRows: `${HEADER_H}px repeat(${timelines.length}, ${CELL_H}px)`,
+          rowGap: `${GAP_Y}px`,
+          columnGap: '0px',
         }}
       >
-        {/* Corner */}
+        {/* Corner cell */}
         <div className="sticky top-0 left-0 z-20 flex items-center justify-center text-xs text-gray-500 font-mono bg-gray-950">
           TL\T
         </div>
 
-        {/* Turn labels (sticky top) */}
+        {/* Turn labels — each spans board col + gutter col (except last) */}
         {Array.from({ length: maxTurn }, (_, i) => (
-          <div
-            key={i}
-            className="sticky top-0 z-10 flex items-center justify-center text-xs text-gray-500 font-mono bg-gray-950 cursor-pointer hover:text-gray-300"
-            onClick={() => scrollRef.current?.scrollTo({ left: i * COL_WIDTH, behavior: 'smooth' })}
-          >
-            T{i + 1}
-          </div>
+          <React.Fragment key={i}>
+            <div
+              className="sticky top-0 z-10 flex items-center justify-center text-xs text-gray-500 font-mono bg-gray-950 cursor-pointer hover:text-gray-300"
+              style={i < maxTurn - 1 ? { gridColumn: 'span 2' } : undefined}
+              onClick={() => scrollRef.current?.scrollTo({ left: i * COL_STRIDE, behavior: 'smooth' })}
+            >
+              T{i + 1}
+            </div>
+          </React.Fragment>
         ))}
 
         {timelines.map((timelineId, rowIndex) => (
           <React.Fragment key={timelineId}>
-            {/* Timeline label (sticky left) */}
+            {/* Timeline label */}
             <div
               className="sticky left-0 z-10 flex items-center justify-end pr-2 text-xs text-gray-500 font-mono bg-gray-950 cursor-pointer hover:text-gray-300"
               onClick={() => scrollRef.current?.scrollTo({ top: rowIndex * ROW_STRIDE, behavior: 'smooth' })}
@@ -212,30 +351,36 @@ export function BoardGrid({
               {timelineId}
             </div>
 
+            {/* Board cells interleaved with gutter spacers */}
             {Array.from({ length: maxTurn }, (_, i) => {
               const turn = i + 1;
               const key = `${timelineId}:${turn}`;
               const cell = cellMap.get(key);
               const isSelected = selectedCell?.timelineId === timelineId && selectedCell?.turn === turn;
 
-              if (!cell?.exists) {
-                return <div key={turn} className="rounded border border-dashed border-gray-800 bg-gray-950 opacity-40" />;
-              }
               return (
-                <BoardCellView
-                  key={turn}
-                  cell={cell}
-                  isSelected={isSelected}
-                  onCellClick={() => onCellClick?.(cell)}
-                  onPieceClick={(id) => onPieceClick?.(id, cell)}
-                  onRegionClick={(rid) => onRegionClick?.(rid, cell)}
-                />
+                <React.Fragment key={turn}>
+                  {/* Board cell */}
+                  {(!cell?.exists) ? (
+                    <div className="rounded border border-dashed border-gray-800 bg-gray-950 opacity-40" />
+                  ) : (
+                    <BoardCellView
+                      cell={cell}
+                      isSelected={isSelected}
+                      onCellClick={() => onCellClick?.(cell)}
+                      onPieceClick={(id) => onPieceClick?.(id, cell)}
+                      onRegionClick={(rid) => onRegionClick?.(rid, cell)}
+                    />
+                  )}
+                  {/* Gutter spacer (empty div — arrows are drawn in SVG) */}
+                  {i < maxTurn - 1 && <div />}
+                </React.Fragment>
               );
             })}
           </React.Fragment>
         ))}
       </div>
-      </div> {/* end relative wrapper */}
+      </div>
     </div>
   );
 }
@@ -249,7 +394,6 @@ interface BoardCellViewProps {
 }
 
 function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionClick }: BoardCellViewProps) {
-  // Border / bg
   let borderColor = 'border-gray-700';
   let bg = 'bg-gray-900';
   if (cell.isTimeTravelTarget) { borderColor = 'border-purple-500'; bg = 'bg-purple-950'; }
@@ -268,7 +412,6 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
       className={`rounded border ${borderColor} ${bg} flex flex-col overflow-hidden cursor-pointer transition-colors text-xs`}
       onClick={onCellClick}
     >
-      {/* Header bar */}
       <div className="flex items-center justify-between px-1.5 py-0.5 border-b border-gray-800 shrink-0">
         <span className="font-mono text-gray-500 text-[10px]">
           {cell.timelineId}:T{cell.turn}
@@ -279,7 +422,6 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
         </span>
       </div>
 
-      {/* Region grid */}
       <div className="flex-1 grid gap-0.5 p-1" style={{ gridTemplateColumns: `repeat(${Math.min(cell.regions.length, 3)}, 1fr)` }}>
         {cell.regions.map((region) => {
           const pieces = piecesByRegion.get(region.id) ?? [];
