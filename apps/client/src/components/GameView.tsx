@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { trpc } from '../trpc';
-import { BoardGrid, BoardCell, PieceInfo, RegionInfo } from './BoardGrid';
+import { BoardGrid, BoardCell, PieceInfo, RegionInfo, type PiecePathStep } from './BoardGrid';
 import { PlayerSwitcher } from './PlayerSwitcher';
 import { RightPanel } from './RightPanel';
 
@@ -44,6 +44,7 @@ function parseRegions(raw: [string, unknown][]): RegionInfo[] {
 export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameViewProps) {
   const [selectedPiece, setSelectedPiece] = useState<SelectedPiece | null>(null);
   const [selectedBoard, setSelectedBoard] = useState<{ timelineId: string; turn: number } | null>(null);
+  const [hoveredPieceId, setHoveredPieceId] = useState<string | null>(null);
 
   const state = trpc.getVisibleState.useQuery(
     { gameId, fogSetting: 'full_information' },
@@ -297,6 +298,70 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
   // suppress unused warning — activeTimeline available for future use
   void activeTimeline;
 
+  // Compute piece path for hover visualization.
+  // 1. Scan all boards for matching realPieceId.
+  // 2. Sort chronologically: parent timeline first (via branch-tree DFS order), then by turn.
+  // 3. Insert ghost departure steps for cross-timeline jumps where the departure
+  //    turn is missing (piece removed before advance snapshot).
+  const piecePath: PiecePathStep[] = (() => {
+    if (!hoveredPieceId) return [];
+    const steps: PiecePathStep[] = [];
+    for (const b of data.boards) {
+      for (const p of (b.pieces ?? [])) {
+        if (p.realPieceId === hoveredPieceId) {
+          steps.push({
+            timelineId: b.address.timeline as string,
+            turn: b.address.turn as number,
+            region: p.region as string,
+          });
+        }
+      }
+    }
+
+    // Sort: timeline tree order first, then turn within each timeline.
+    const tlOrder = new Map(timelines.map((tl, i) => [tl, i]));
+    steps.sort((a, b) =>
+      (tlOrder.get(a.timelineId) ?? 999) - (tlOrder.get(b.timelineId) ?? 999) ||
+      a.turn - b.turn
+    );
+
+    // Max turn per timeline (from all boards, not just this piece's snapshots)
+    const tlMaxTurn = new Map<string, number>();
+    for (const b of data.boards) {
+      const tl = b.address.timeline as string;
+      const t = b.address.turn as number;
+      tlMaxTurn.set(tl, Math.max(tlMaxTurn.get(tl) ?? 0, t));
+    }
+
+    // Insert ghost departure steps for cross-timeline transitions.
+    // If piece is last seen on TL0 at T2 but TL0 has boards up to T3,
+    // insert a ghost at TL0:T3 (same region) to show the departure point.
+    const enriched: PiecePathStep[] = [];
+    for (let i = 0; i < steps.length; i++) {
+      enriched.push(steps[i]!);
+      const next = steps[i + 1];
+      if (!next) continue;
+      const curr = steps[i]!;
+
+      if (curr.timelineId !== next.timelineId) {
+        // Cross-timeline jump — add ONE ghost at the departure turn
+        // (one turn after the last snapshot on the source timeline).
+        const maxTurn = tlMaxTurn.get(curr.timelineId) ?? curr.turn;
+        const ghostTurn = curr.turn + 1;
+        if (ghostTurn <= maxTurn) {
+          enriched.push({
+            timelineId: curr.timelineId,
+            turn: ghostTurn,
+            region: curr.region, // best inference — same region as last known
+            isGhost: true,
+          });
+        }
+      }
+    }
+
+    return enriched;
+  })();
+
   return (
     <div className="flex flex-col min-h-screen bg-gray-950 text-white">
       {/* Header */}
@@ -340,6 +405,9 @@ export function GameView({ gameId, playerId, onPlayerSwitch, onLeave }: GameView
               onCellClick={handleCellClick}
               onPieceClick={handlePieceClick}
               onRegionClick={handleRegionClick}
+              piecePath={piecePath}
+              hoveredPieceId={hoveredPieceId}
+              onPieceHover={setHoveredPieceId}
             />
           </main>
         </Panel>

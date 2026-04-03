@@ -175,9 +175,12 @@ export function processAction(
   const directStabilizingNode = branchTree.nodes[action.to.timeline as string];
   if (result.success && directStabilizingNode?.inStabilizationPeriod) {
     if (movingPiece && movingPieceLoc && state.pieceStore) {
-      const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
+      // Remove from source first, then re-add at destination with the SAME ID.
+      // Preserving the original ID lets the client trace the piece's full path
+      // across time-travel jumps via historical snapshots.
+      state.pieceStore.removePiece(state.gameId, movingPiece.id);
       state.pieceStore.addPiece(state.gameId,
-        { ...movingPiece, id: arrivedId },
+        movingPiece,
         { timeline: directStabilizingNode.timelineId as string,
           turn: action.to.turn as number,
           region: action.to.region,
@@ -186,7 +189,6 @@ export function processAction(
           disambiguator: 0,
         },
       );
-      state.pieceStore.removePiece(state.gameId, movingPiece.id);
     }
     // Update the dest board's parties list
     const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
@@ -201,12 +203,12 @@ export function processAction(
 
     if (existingBranchNode) {
       // Subsequent arrival via origin address: bootstrap-paradox duplicate — historical
-      // copy stays, arriving piece inserted under a new piece ID so both coexist.
+      // copy stays, arriving piece keeps its original ID so path tracing works.
       if (movingPiece && movingPieceLoc && state.pieceStore) {
         const stabilizationStartTurn = originAddress.turn as Turn;
-        const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
+        state.pieceStore.removePiece(state.gameId, movingPiece.id);
         state.pieceStore.addPiece(state.gameId,
-          { ...movingPiece, id: arrivedId },
+          movingPiece,
           { timeline: existingBranchNode.timelineId as string,
             turn: stabilizationStartTurn,
             region: action.to.region,
@@ -215,7 +217,6 @@ export function processAction(
             disambiguator: 0,
           },
         );
-        state.pieceStore.removePiece(state.gameId, movingPiece.id);
       }
       // Update the dest board's parties list
       const stabilizationStartTurn = originAddress.turn as Turn;

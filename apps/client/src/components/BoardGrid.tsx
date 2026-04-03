@@ -34,6 +34,14 @@ export interface BranchInfo {
   divergedAtTurn: number | null;
 }
 
+export interface PiecePathStep {
+  timelineId: string;
+  turn: number;
+  region: string;
+  /** Ghost steps are inferred departure points — the piece was here but left (time travel, etc.) */
+  isGhost?: boolean;
+}
+
 export interface BoardGridProps {
   cells: BoardCell[];
   maxTurn: number;
@@ -43,6 +51,12 @@ export interface BoardGridProps {
   onCellClick?: (cell: BoardCell) => void;
   onPieceClick?: (pieceId: string, cell: BoardCell) => void;
   onRegionClick?: (regionId: string, cell: BoardCell) => void;
+  /** Path steps for a hovered piece (chronological positions across boards) */
+  piecePath?: PiecePathStep[];
+  /** ID of the currently hovered piece */
+  hoveredPieceId?: string | null;
+  /** Called when a piece is hovered/unhovered */
+  onPieceHover?: (pieceId: string | null) => void;
 }
 
 // ── Grid geometry ────────────────────────────────────────────────────────────
@@ -83,6 +97,38 @@ function cellLeft(row: number, col: number) {
 /** Centre of the gutter strip to the RIGHT of column `col`. */
 function gutterCenter(col: number) {
   return PAD + LABEL_W + col * COL_STRIDE + CELL_W + GUTTER_W / 2;
+}
+
+// ── Cell-internal geometry (must match BoardCellView CSS) ─────────────────────
+// Header bar: px-1.5 py-0.5 + text + border ≈ 20px.  Padding: p-1 = 4px.  Gap: gap-0.5 = 2px.
+const CELL_HEADER_H = 20;
+const CELL_PAD = 4;
+const CELL_GAP = 2;
+
+/** Pixel centre of a region within a board cell, in absolute SVG coordinates. */
+function regionPixelCenter(
+  boardRow: number,
+  boardCol: number,
+  regionIndex: number,
+  totalRegions: number,
+): { x: number; y: number } {
+  const cols = Math.min(totalRegions, 3);
+  const rows = Math.ceil(totalRegions / cols);
+  const availW = CELL_W - 2 * CELL_PAD;
+  const availH = CELL_H - CELL_HEADER_H - 2 * CELL_PAD;
+  const rw = (availW - (cols - 1) * CELL_GAP) / cols;
+  const rh = (availH - (rows - 1) * CELL_GAP) / rows;
+  const rCol = regionIndex % cols;
+  const rRow = Math.floor(regionIndex / cols);
+
+  // Cell top-left in SVG coords
+  const cellX = PAD + LABEL_W + boardCol * COL_STRIDE;
+  const cellY = PAD + HEADER_H + GAP_Y + boardRow * ROW_STRIDE;
+
+  return {
+    x: cellX + CELL_PAD + rCol * (rw + CELL_GAP) + rw / 2,
+    y: cellY + CELL_HEADER_H + CELL_PAD + rRow * (rh + CELL_GAP) + rh / 2,
+  };
 }
 
 // Stable player→color mapping by hashing the player ID
@@ -211,6 +257,66 @@ function buildConnectors(
   return { connectors, forkDots };
 }
 
+/**
+ * Resolve a piece-path step to its pixel position (region centre within the board cell).
+ * Returns null if the cell or region can't be found.
+ */
+function resolveStepPosition(
+  step: PiecePathStep,
+  timelines: string[],
+  cellMap: Map<string, BoardCell>,
+): { x: number; y: number } | null {
+  const row = timelines.indexOf(step.timelineId);
+  if (row === -1) return null;
+  const cell = cellMap.get(`${step.timelineId}:${step.turn}`);
+  if (!cell) return null;
+  const regionIndex = cell.regions.findIndex(r => r.id === step.region);
+  if (regionIndex === -1) return null;
+  return regionPixelCenter(row, step.turn - 1, regionIndex, cell.regions.length);
+}
+
+/**
+ * Build SVG path segments tracing a piece's journey from region to region.
+ * Each consecutive pair of steps becomes an arrow — straight for same-board
+ * advances (or spatial moves), curved for cross-timeline time-travel jumps.
+ */
+function buildPiecePathConnectors(
+  steps: PiecePathStep[],
+  timelines: string[],
+  cellMap: Map<string, BoardCell>,
+): string[] {
+  if (steps.length < 2) return [];
+  const paths: string[] = [];
+
+  for (let i = 0; i < steps.length - 1; i++) {
+    const from = steps[i]!;
+    const to = steps[i + 1]!;
+    const src = resolveStepPosition(from, timelines, cellMap);
+    const dst = resolveStepPosition(to, timelines, cellMap);
+    if (!src || !dst) continue;
+
+    const sameTimeline = from.timelineId === to.timelineId;
+    const sameTurn = from.turn === to.turn;
+
+    if (sameTimeline && sameTurn) {
+      // Spatial move within the same board — straight line
+      paths.push(`M ${src.x} ${src.y} L ${dst.x} ${dst.y}`);
+    } else if (sameTimeline) {
+      // Same timeline, different turn — route through the gutter (above/below cells)
+      // Exit right from source region, curve to destination region
+      const midX = (src.x + dst.x) / 2;
+      paths.push(`M ${src.x} ${src.y} C ${midX} ${src.y} ${midX} ${dst.y} ${dst.x} ${dst.y}`);
+    } else {
+      // Cross-timeline jump (time travel) — S-curve through gutter space
+      const midX = (src.x + dst.x) / 2;
+      paths.push(
+        `M ${src.x} ${src.y} C ${midX} ${src.y} ${midX} ${dst.y} ${dst.x} ${dst.y}`
+      );
+    }
+  }
+  return paths;
+}
+
 export function BoardGrid({
   cells,
   maxTurn,
@@ -220,6 +326,9 @@ export function BoardGrid({
   onCellClick,
   onPieceClick,
   onRegionClick,
+  piecePath = [],
+  hoveredPieceId,
+  onPieceHover,
 }: BoardGridProps) {
   const cellMap = new Map(cells.map((c) => [`${c.timelineId}:${c.turn}`, c]));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -296,6 +405,9 @@ export function BoardGrid({
           <marker id="arrow-branch" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
             <path d="M0,0 L0,6 L6,3 z" fill="#a78bfa" />
           </marker>
+          <marker id="arrow-path" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#facc15" />
+          </marker>
         </defs>
         {connectors.map((c, i) => (
           <path
@@ -312,6 +424,41 @@ export function BoardGrid({
         {forkDots.map((dot, i) => (
           <circle key={`dot-${i}`} cx={dot.x} cy={dot.y} r={4} fill="#9ca3af" />
         ))}
+        {/* Piece path overlay — shown on hover */}
+        {piecePath.length >= 2 && buildPiecePathConnectors(piecePath, timelines, cellMap).map((d, i) => (
+          <path
+            key={`pp-${i}`}
+            d={d}
+            stroke="#facc15"
+            strokeWidth={2.5}
+            strokeDasharray="4 2"
+            fill="none"
+            opacity={0.8}
+            markerEnd="url(#arrow-path)"
+          />
+        ))}
+        {/* Piece path dots — highlight each region the piece has been in */}
+        {piecePath.map((step, i) => {
+          const pos = resolveStepPosition(step, timelines, cellMap);
+          if (!pos) return null;
+          return step.isGhost ? (
+            // Ghost dot: hollow ring showing inferred departure point
+            <circle
+              key={`ppd-${i}`}
+              cx={pos.x} cy={pos.y} r={4}
+              fill="none" stroke="#facc15" strokeWidth={1.5}
+              opacity={0.5} strokeDasharray="2 1"
+            />
+          ) : (
+            // Solid dot: piece was confirmed here in a snapshot
+            <circle
+              key={`ppd-${i}`}
+              cx={pos.x} cy={pos.y} r={4}
+              fill="#facc15" opacity={0.7}
+              stroke="#000" strokeWidth={0.5}
+            />
+          );
+        })}
       </svg>
 
       <div
@@ -370,6 +517,8 @@ export function BoardGrid({
                       onCellClick={() => onCellClick?.(cell)}
                       onPieceClick={(id) => onPieceClick?.(id, cell)}
                       onRegionClick={(rid) => onRegionClick?.(rid, cell)}
+                      hoveredPieceId={hoveredPieceId}
+                      onPieceHover={onPieceHover}
                     />
                   )}
                   {/* Gutter spacer (empty div — arrows are drawn in SVG) */}
@@ -391,9 +540,11 @@ interface BoardCellViewProps {
   onCellClick: () => void;
   onPieceClick: (id: string) => void;
   onRegionClick: (regionId: string) => void;
+  hoveredPieceId?: string | null | undefined;
+  onPieceHover?: ((pieceId: string | null) => void) | undefined;
 }
 
-function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionClick }: BoardCellViewProps) {
+function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionClick, hoveredPieceId, onPieceHover }: BoardCellViewProps) {
   let borderColor = 'border-gray-700';
   let bg = 'bg-gray-900';
   if (cell.isTimeTravelTarget) { borderColor = 'border-purple-500'; bg = 'bg-purple-950'; }
@@ -446,7 +597,11 @@ function BoardCellView({ cell, isSelected, onCellClick, onPieceClick, onRegionCl
                     key={piece.id}
                     title={`${piece.type} (${piece.owner})`}
                     onClick={(e) => { e.stopPropagation(); onPieceClick(piece.id); }}
-                    className="w-3 h-3 rounded-full border border-black/30 hover:scale-125 transition-transform shrink-0"
+                    onMouseEnter={() => onPieceHover?.(piece.id)}
+                    onMouseLeave={() => onPieceHover?.(null)}
+                    className={`w-3 h-3 rounded-full border hover:scale-125 transition-transform shrink-0 ${
+                      hoveredPieceId === piece.id ? 'border-yellow-400 ring-1 ring-yellow-400' : 'border-black/30'
+                    }`}
                     style={{ backgroundColor: playerColor(piece.owner) }}
                   />
                 ))}
