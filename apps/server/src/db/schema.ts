@@ -16,6 +16,7 @@ export const games = sqliteTable('games', {
   executionOrder: text('execution_order').notNull(), // JSON: ExecutionOrder
   windows: text('windows').notNull(),       // JSON: [BranchId, BranchWindow][]
   winner: text('winner'),                   // PlayerId | null
+  pieceDbPath: text('piece_db_path').notNull(), // path to per-game piece SQLite DB
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 });

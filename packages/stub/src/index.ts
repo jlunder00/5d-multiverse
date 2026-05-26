@@ -86,11 +86,9 @@ const actionValidator: IActionValidator = {
     if (type === ('move' as typeof type)) {
       if (!entityId) return { valid: false, reason: 'move requires entityId' };
 
-      // Phase 1 bridge: runtime entities Map lives on board as untyped field
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const entity = (context.board as any).entities?.get(entityId);
-      if (!entity) return { valid: false, reason: 'entity not found' };
-      if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
+      const piece = context.board.pieces.find((p) => p.realPieceId === entityId);
+      if (!piece) return { valid: false, reason: 'piece not found' };
+      if ((piece.owner as string) !== (action.player as string)) return { valid: false, reason: 'not your piece' };
       if (from.timeline !== to.timeline || from.turn !== to.turn) {
         return { valid: false, reason: 'move must stay on the same board' };
       }
@@ -104,10 +102,9 @@ const actionValidator: IActionValidator = {
 
     if (type === ('move_to_past' as typeof type)) {
       if (!entityId) return { valid: false, reason: 'move_to_past requires entityId' };
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const entity = (context.board as any).entities?.get(entityId);
-      if (!entity) return { valid: false, reason: 'entity not found' };
-      if (entity.owner !== action.player) return { valid: false, reason: 'not your piece' };
+      const piece = context.board.pieces.find((p) => p.realPieceId === entityId);
+      if (!piece) return { valid: false, reason: 'piece not found' };
+      if ((piece.owner as string) !== (action.player as string)) return { valid: false, reason: 'not your piece' };
       if (to.turn >= from.turn) return { valid: false, reason: 'destination must be a past turn' };
       return { valid: true };
     }
@@ -129,20 +126,18 @@ const actionEvaluator: IActionEvaluator = {
     }
 
     if (type === ('move' as typeof type) && entityId) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const entity = (context.board as any).entities?.get(entityId);
-      if (!entity) return { actionId: action.id, success: false, error: 'entity not found', effects: [] };
-
-      const moved = { ...entity, location: { ...action.to } };
-      return {
-        actionId: action.id,
-        success: true,
-        effects: [{ type: 'entity_upsert', entity: moved }],
-      };
+      const piece = context.board.pieces.find((p) => p.realPieceId === entityId);
+      if (!piece) return { actionId: action.id, success: false, error: 'piece not found', effects: [] };
+      // Spatial move: mutate store directly, engine handles board state
+      if (context.pieceStore) {
+        context.pieceStore.movePiece(context.gameId, entityId, { region: action.to.region });
+      }
+      return { actionId: action.id, success: true, effects: [] };
     }
 
-    if (type === ('move_to_past' as typeof type) && entityId) {
-      return { actionId: action.id, success: true, effects: [{ type: 'entity_remove', entityId }] };
+    if (type === ('move_to_past' as typeof type)) {
+      // Engine handles piece removal and branch bootstrap via pieceStore.createBranch()
+      return { actionId: action.id, success: true, effects: [] };
     }
 
     return { actionId: action.id, success: false, error: 'unknown action', effects: [] };
@@ -195,19 +190,16 @@ function createInitialBoard(players: PlayerId[]): Board {
     REGIONS.map((id) => [id, { id, owner: null, data: { label: id as string } }]),
   );
 
-  // Phase 1 bridge: entities Map kept at runtime as untyped field;
-  // Board.pieces is the typed field (empty until Phase 3 populates from PieceStore).
-  const entities = new Map<string, unknown>();
-  players.forEach((player, i) => {
-    const startRegion = START_REGIONS[i % START_REGIONS.length]!;
-    const entityId = `piece-${player}`;
-    entities.set(entityId, {
-      id: entityId,
+  const pieces = players.map((player, i) => {
+    const region = START_REGIONS[i % START_REGIONS.length]!;
+    return {
+      realPieceId: `piece-${player}` as import('@5d/types').RealPieceId,
       owner: player,
-      type: 'piece',
-      location: { timeline, turn, region: startRegion },
+      type: 'piece' as import('@5d/types').UnitTypeId,
+      region,
+      disambiguator: 0,
       data: { label: `${player}'s piece` },
-    });
+    };
   });
 
   const economies = new Map<PlayerId, Economy>(
@@ -217,13 +209,10 @@ function createInitialBoard(players: PlayerId[]): Board {
   return {
     address: { timeline, turn },
     regions,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entities: entities as any,
-    pieces: [],
+    pieces,
     economies,
     pluginData: {},
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any as Board;
+  };
 }
 
 // ---------------------------------------------------------------------------

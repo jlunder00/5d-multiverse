@@ -42,6 +42,7 @@ interface HistoricalRow {
   type: string;
   disambiguator: number;
   data: string;
+  real_piece_id: string | null;
 }
 
 interface LocationRow {
@@ -114,6 +115,10 @@ export class SqlitePieceStore implements PieceStore {
       this.db.pragma('journal_mode = WAL');
       this.db.pragma('foreign_keys = ON');
       this.db.exec(PIECE_STORE_SCHEMA);
+      // Migrate existing DBs: add real_piece_id to historical_snapshots if missing.
+      try {
+        this.db.exec(`ALTER TABLE historical_snapshots ADD COLUMN real_piece_id TEXT`);
+      } catch { /* column already exists — ignore */ }
     } catch (err) {
       this.db.close();
       throw new Error(
@@ -157,7 +162,7 @@ export class SqlitePieceStore implements PieceStore {
     }));
   }
 
-  getHistoricalPieces(gameId: string, timeline: string, turn: number): HistoricalPieceInfo[] {
+  getHistoricalPieces(gameId: string, timeline: string, turn: number): (HistoricalPieceInfo & { realPieceId?: RealPieceId })[] {
     const rows = this.db.prepare<[string, string, number], HistoricalRow>(
       `SELECT * FROM historical_snapshots
        WHERE game_id = ? AND timeline = ? AND turn = ?
@@ -170,6 +175,7 @@ export class SqlitePieceStore implements PieceStore {
       region: r.region as HistoricalPieceInfo['region'],
       disambiguator: r.disambiguator,
       data: JSON.parse(r.data) as Record<string, unknown>,
+      ...(r.real_piece_id != null ? { realPieceId: r.real_piece_id as RealPieceId } : {}),
     }));
   }
 
@@ -218,18 +224,40 @@ export class SqlitePieceStore implements PieceStore {
       throw new Error(`movePiece: newCoord has no fields set for piece "${realPieceId}" in game "${gameId}"`);
     }
 
-    // Build a single UPDATE for atomicity — avoids intermediate PK violations
-    // when multiple fields change simultaneously (e.g., region + timeline).
+    // Read current row to determine owner/type and destination for disambiguator computation.
+    const current = this.db.prepare<[string, string], PresentRow>(
+      `SELECT * FROM present_positions WHERE game_id = ? AND real_piece_id = ?`
+    ).get(gameId, realPieceId);
+    if (!current) throw new Error(`movePiece: piece "${realPieceId}" not found in present_positions for game "${gameId}"`);
+
+    const destTimeline = timeline ?? current.timeline;
+    const destTurn = turn ?? current.turn;
+    const destRegion = region ?? current.region;
+    const locationChanging =
+      destTimeline !== current.timeline || destTurn !== current.turn || destRegion !== current.region;
+
+    // Recompute disambiguator at destination using MAX+1 to survive gaps left by departing pieces.
+    let disambiguator = current.disambiguator;
+    if (locationChanging) {
+      const maxRow = this.db.prepare<[string, string, number, string, string, string], { m: number | null }>(
+        `SELECT MAX(disambiguator) AS m FROM present_positions
+         WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
+      ).get(gameId, destTimeline, destTurn, destRegion, current.owner, current.type);
+      disambiguator = maxRow?.m != null ? maxRow.m + 1 : 0;
+    }
+
+    // Build a single UPDATE for atomicity.
     const sets: string[] = [];
     const vals: unknown[] = [];
-    if (region !== undefined)   { sets.push('region = ?');   vals.push(region); }
-    if (timeline !== undefined) { sets.push('timeline = ?'); vals.push(timeline); }
-    if (turn !== undefined)     { sets.push('turn = ?');     vals.push(turn); }
+    if (region !== undefined)        { sets.push('region = ?');        vals.push(region); }
+    if (timeline !== undefined)      { sets.push('timeline = ?');      vals.push(timeline); }
+    if (turn !== undefined)          { sets.push('turn = ?');          vals.push(turn); }
+    if (disambiguator !== current.disambiguator) { sets.push('disambiguator = ?'); vals.push(disambiguator); }
 
     const rpp = this.db.prepare(
       `UPDATE present_positions SET ${sets.join(', ')} WHERE game_id = ? AND real_piece_id = ?`
     ).run(...(vals as string[]), gameId, realPieceId);
-    if (rpp.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not found in present_positions for game "${gameId}"`);
+    if (rpp.changes === 0) throw new Error(`movePiece: piece "${realPieceId}" not found in present_positions (second read) for game "${gameId}"`);
 
     const rpl = this.db.prepare(
       `UPDATE piece_locations SET ${sets.join(', ')} WHERE game_id = ? AND real_piece_id = ?`
@@ -265,18 +293,25 @@ export class SqlitePieceStore implements PieceStore {
        VALUES (?, ?, ?, ?, ?)`
     ).run(gameId, state.id, state.owner, state.type, JSON.stringify(state.data));
 
+    // Auto-assign disambiguator: MAX+1 avoids collisions even when prior pieces departed (gaps).
+    const maxRow = this.db.prepare<[string, string, number, string, string, string], { m: number | null }>(
+      `SELECT MAX(disambiguator) AS m FROM present_positions
+       WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
+    ).get(gameId, coord.timeline, coord.turn, coord.region, coord.owner, coord.type);
+    const disambiguator = maxRow?.m != null ? maxRow.m + 1 : 0;
+
     this.db.prepare(
       `INSERT OR REPLACE INTO present_positions
          (game_id, timeline, turn, region, owner, type, disambiguator, real_piece_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(gameId, coord.timeline, coord.turn, coord.region, coord.owner, coord.type,
-      coord.disambiguator, state.id);
+      disambiguator, state.id);
 
     this.db.prepare(
       `INSERT OR REPLACE INTO piece_locations
          (game_id, real_piece_id, timeline, turn, region, disambiguator)
        VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(gameId, state.id, coord.timeline, coord.turn, coord.region, coord.disambiguator);
+    ).run(gameId, state.id, coord.timeline, coord.turn, coord.region, disambiguator);
   }
 
   // ── Turn lifecycle ─────────────────────────────────────────────────────────
@@ -303,8 +338,8 @@ export class SqlitePieceStore implements PieceStore {
 
       const insertSnapshot = this.db.prepare(
         `INSERT OR REPLACE INTO historical_snapshots
-           (game_id, timeline, turn, region, owner, type, disambiguator, data)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+           (game_id, timeline, turn, region, owner, type, disambiguator, data, real_piece_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       );
 
       const insertPresent = this.db.prepare(
@@ -319,8 +354,8 @@ export class SqlitePieceStore implements PieceStore {
 
       for (const rows of groups.values()) {
         rows.forEach((row, i) => {
-          // Snapshot for outgoing turn
-          insertSnapshot.run(gameId, tl, fromTurn, row.region, row.owner, row.type, i, row.piece_data);
+          // Snapshot for outgoing turn — store real_piece_id for UI historical rendering
+          insertSnapshot.run(gameId, tl, fromTurn, row.region, row.owner, row.type, i, row.piece_data, row.real_piece_id);
           // New present for next turn
           insertPresent.run(gameId, tl, nextTurn, row.region, row.owner, row.type, i, row.real_piece_id);
           updateLocation.run(nextTurn, gameId, row.real_piece_id);
@@ -359,7 +394,6 @@ export class SqlitePieceStore implements PieceStore {
          ORDER BY region, owner, type, disambiguator`
       ).all(gameId, originTimeline, originTurn);
 
-      // Precondition guards
       const travelerState = this.getPieceState(gameId, travelerId);
       if (!travelerState) throw new Error(`createBranch: travelerId "${travelerId}" not in pieces table`);
 
@@ -372,8 +406,6 @@ export class SqlitePieceStore implements PieceStore {
         throw new Error(`createBranch: no historical snapshot at (${originTimeline}, ${originTurn})`);
       }
 
-      // 2. Bootstrap new timeline: mint new RealPieceIds for each snapshot piece
-      //    except the traveler (which keeps its own ID)
       const insertPiece = this.db.prepare(
         `INSERT OR IGNORE INTO pieces (game_id, real_piece_id, owner, type, data)
          VALUES (?, ?, ?, ?, ?)`
@@ -389,62 +421,43 @@ export class SqlitePieceStore implements PieceStore {
          VALUES (?, ?, ?, ?, ?, ?)`
       );
 
-      let travelerPlaced = false;
-
+      // 2. Bootstrap: clone ALL snapshot pieces with new IDs, including the traveler's
+      //    historical self. This preserves the bootstrap paradox — the traveler's past
+      //    copy and the arriving traveler coexist on the new timeline.
       for (const snap of snapshots) {
-        // Match snapshot row to traveler slot by (region, owner, type, disambiguator)
-        // using the source location captured before any writes.
-        // Match on (region, owner, type, disambiguator). region+disambiguator alone is not
-        // unique — multiple pieces can share a region with the same disambiguator but different
-        // owner/type. owner and type come from travelerState (current pieces row) because
-        // piece_locations doesn't store them; they're safe to use because owner and type are
-        // immutable via the PieceStore API (only settable at addPiece time).
-        const isTravelerSlot =
-          snap.region === sourceLoc.region &&
-          snap.owner === travelerState.owner &&
-          snap.type === travelerState.type &&
-          snap.disambiguator === sourceLoc.disambiguator;
-
-        if (isTravelerSlot) {
-          // Traveler goes to dest region on new timeline — keeps its own ID
-          insertPresent.run(
-            gameId, newTimelineId, originTurn,
-            travelerDestRegion, snap.owner, snap.type, snap.disambiguator, travelerId,
-          );
-          insertLocation.run(
-            gameId, travelerId, newTimelineId, originTurn,
-            travelerDestRegion, snap.disambiguator,
-          );
-          travelerPlaced = true;
-        } else {
-          // Bootstrap: mint a new RealPieceId for this historical piece
-          const newId = randomUUID() as RealPieceId;
-          insertPiece.run(gameId, newId, snap.owner, snap.type, snap.data);
-          insertPresent.run(
-            gameId, newTimelineId, originTurn,
-            snap.region, snap.owner, snap.type, snap.disambiguator, newId,
-          );
-          insertLocation.run(
-            gameId, newId, newTimelineId, originTurn, snap.region, snap.disambiguator,
-          );
-        }
-      }
-
-      if (!travelerPlaced) {
-        throw new Error(
-          `createBranch: traveler slot not found in snapshot at (${originTimeline}, ${originTurn}). ` +
-          `Traveler "${travelerId}": sourceLoc=(region=${sourceLoc.region}, dis=${sourceLoc.disambiguator}), ` +
-          `owner=${travelerState.owner}, type=${travelerState.type}. ` +
-          `Snapshot had ${snapshots.length} row(s).`,
+        const newId = randomUUID() as RealPieceId;
+        insertPiece.run(gameId, newId, snap.owner, snap.type, snap.data);
+        insertPresent.run(
+          gameId, newTimelineId, originTurn,
+          snap.region, snap.owner, snap.type, snap.disambiguator, newId,
+        );
+        insertLocation.run(
+          gameId, newId, newTimelineId, originTurn, snap.region, snap.disambiguator,
         );
       }
 
-      // 3. Remove traveler from its SOURCE board only (not from the new timeline)
+      // 3. Place the traveler at destRegion on the new timeline (original ID).
+      //    Use MAX+1 so gaps left by departed pieces never cause collisions.
+      const maxRow = this.db.prepare<[string, string, number, string, string, string], { m: number | null }>(
+        `SELECT MAX(disambiguator) AS m FROM present_positions
+         WHERE game_id = ? AND timeline = ? AND turn = ? AND region = ? AND owner = ? AND type = ?`
+      ).get(gameId, newTimelineId, originTurn, travelerDestRegion as string,
+            travelerState.owner as string, travelerState.type as string);
+      const travelerDisambiguator = maxRow?.m != null ? maxRow.m + 1 : 0;
+
+      insertPresent.run(
+        gameId, newTimelineId, originTurn,
+        travelerDestRegion, travelerState.owner, travelerState.type, travelerDisambiguator, travelerId,
+      );
+      insertLocation.run(
+        gameId, travelerId, newTimelineId, originTurn, travelerDestRegion, travelerDisambiguator,
+      );
+
+      // 4. Remove traveler from its source board (it traveled away).
       this.db.prepare(
         `DELETE FROM present_positions
          WHERE game_id = ? AND real_piece_id = ? AND timeline = ? AND turn = ?`
       ).run(gameId, travelerId, sourceLoc.timeline, sourceLoc.turn);
-      // piece_locations for the traveler was already updated by insertLocation above
     });
 
     create();

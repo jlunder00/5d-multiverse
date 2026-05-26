@@ -1,9 +1,17 @@
 import { useState } from 'react';
 
+interface PieceEntry {
+  realPieceId: string;
+  owner: string;
+  type: string;
+  region: string;
+  disambiguator: number;
+}
+
 interface BoardEntry {
   address: { timeline: unknown; turn: unknown };
   regions: [string, unknown][];
-  entities: [string, unknown][];
+  pieces: PieceEntry[];
   economies: [string, unknown][];
   pluginData: Record<string, unknown>;
   inStabilizationPeriod: boolean;
@@ -124,21 +132,18 @@ function InfoTab({
         </table>
       </section>
 
-      {/* Entities */}
+      {/* Pieces */}
       <section>
-        <div className="text-gray-500 uppercase tracking-wide text-[10px] mb-1">Entities</div>
-        {board.entities.length === 0 ? (
+        <div className="text-gray-500 uppercase tracking-wide text-[10px] mb-1">Pieces</div>
+        {board.pieces.length === 0 ? (
           <div className="text-gray-600 italic">none</div>
         ) : (
-          board.entities.map(([id, e]) => {
-            const ent = e as { owner: string; type: string; location: { region: string } };
-            return (
-              <div key={id} className="flex justify-between py-0.5 border-b border-gray-800">
-                <span className="font-mono text-gray-400 truncate">{id}</span>
-                <span className="text-gray-500 ml-2 shrink-0">{ent.owner} @ {ent.location.region}</span>
-              </div>
-            );
-          })
+          board.pieces.map((p) => (
+            <div key={p.realPieceId} className="flex justify-between py-0.5 border-b border-gray-800">
+              <span className="font-mono text-gray-400 truncate">{p.realPieceId}</span>
+              <span className="text-gray-500 ml-2 shrink-0">{p.owner} @ {p.region}</span>
+            </div>
+          ))
         )}
       </section>
 

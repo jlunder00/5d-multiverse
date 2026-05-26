@@ -1,27 +1,41 @@
 import { describe, it, expect } from 'vitest';
 import { processAction, advanceAllTimelines } from '../game-loop.js';
-import { getBoardAt } from '../world-state.js';
+import { getBoardAt, setBoard } from '../world-state.js';
 import {
   testPlugin, testTools,
-  makeBoard, makeEntity, makeWorld, makeState, makeAction,
-  TL, T, EID,
+  MockPieceStore,
+  makeBoard, makeWorld, makeState, makeAction,
+  TL, T, P, PID, RID,
 } from './helpers.js';
+import type { UnitTypeId } from '@5d/types';
 
-// Helper: build a state with P1 holding a piece at region 'N' on TL0:T1
-function stateWithPieceAtN() {
-  const entity = makeEntity('piece-P1', 'P1', 'TL0', 1, 'N');
-  const board = makeBoard('TL0', 1, { entities: [entity] });
-  const world = makeWorld([board]);
-  return makeState(world, ['P1', 'P2'], 1);
+const PIECE = 'piece' as UnitTypeId;
+
+function makePiece(id: string, owner: string, timeline: string, turn: number, region: string) {
+  return {
+    state: { id: PID(id), owner: P(owner), type: PIECE, data: {} },
+    coord: { timeline, turn, region: RID(region), owner: P(owner), type: PIECE, disambiguator: 0 },
+  };
 }
 
-// Helper: build a state with a piece at T=2 (present) and an empty board at T=1 (past)
+// Helper: state with P1 holding a piece at region 'N' on TL0:T1
+function stateWithPieceAtN() {
+  const store = new MockPieceStore();
+  store.initGame('test-game', [makePiece('piece-P1', 'P1', 'TL0', 1, 'N')]);
+  const board = makeBoard('TL0', 1);
+  const world = makeWorld([board]);
+  return makeState(world, ['P1', 'P2'], 1, store);
+}
+
+// Helper: piece at T=1, advance to T=2 (creates history at T=1), then set up state at T=2
 function stateForTimeTravelFrom2To1() {
-  const entity = makeEntity('piece-P1', 'P1', 'TL0', 2, 'N');
+  const store = new MockPieceStore();
+  store.initGame('test-game', [makePiece('piece-P1', 'P1', 'TL0', 1, 'N')]);
+  store.advanceAllTimelines('test-game', [{ timeline: 'TL0', fromTurn: 1 }]);
   const pastBoard = makeBoard('TL0', 1);
-  const presentBoard = makeBoard('TL0', 2, { entities: [entity] });
+  const presentBoard = makeBoard('TL0', 2);
   const world = makeWorld([pastBoard, presentBoard]);
-  return makeState(world, ['P1', 'P2'], 2);
+  return makeState(world, ['P1', 'P2'], 2, store);
 }
 
 // Returns all timelines in stabilization period from branchTree nodes
@@ -34,35 +48,37 @@ function stabilizationTimelines(state: ReturnType<typeof makeState>) {
 // ---------------------------------------------------------------------------
 
 describe('processAction — spatial move', () => {
-  it('moves the entity to the destination region on the board', () => {
+  it('moves the piece to the destination region in the store', () => {
     const state = stateWithPieceAtN();
     const action = makeAction('move', 'P1',
       { timeline: 'TL0', turn: 1, region: 'N' },
       { timeline: 'TL0', turn: 1, region: 'C' },
       'piece-P1',
     );
-    const next = processAction(state, testPlugin, testTools, action,
+    processAction(state, testPlugin, testTools, action,
       { timeline: TL('TL0'), turn: T(1) }, false, undefined);
 
-    const board = getBoardAt(next.world, { timeline: TL('TL0'), turn: T(1) });
-    const entity = board?.entities.get(EID('piece-P1'));
-    expect(entity).toBeDefined();
-    expect(entity!.location.region as string).toBe('C');
+    const store = state.pieceStore as MockPieceStore;
+    const pieces = store.getPiecesOnBoard('test-game', 'TL0', 1);
+    const p = pieces.find((p) => p.realPieceId === PID('piece-P1'));
+    expect(p).toBeDefined();
+    expect(p!.region as string).toBe('C');
   });
 
-  it('does NOT leave the entity at the source region after moving', () => {
+  it('does NOT leave the piece at the source region after moving', () => {
     const state = stateWithPieceAtN();
     const action = makeAction('move', 'P1',
       { timeline: 'TL0', turn: 1, region: 'N' },
       { timeline: 'TL0', turn: 1, region: 'C' },
       'piece-P1',
     );
-    const next = processAction(state, testPlugin, testTools, action,
+    processAction(state, testPlugin, testTools, action,
       { timeline: TL('TL0'), turn: T(1) }, false, undefined);
 
-    const board = getBoardAt(next.world, { timeline: TL('TL0'), turn: T(1) });
-    const entity = board?.entities.get(EID('piece-P1'));
-    expect(entity!.location.region as string).not.toBe('N');
+    const store = state.pieceStore as MockPieceStore;
+    const pieces = store.getPiecesOnBoard('test-game', 'TL0', 1);
+    const p = pieces.find((p) => p.realPieceId === PID('piece-P1'));
+    expect(p!.region as string).not.toBe('N');
   });
 
   it('rejects a move to a non-adjacent region', () => {
@@ -78,12 +94,14 @@ describe('processAction — spatial move', () => {
     ).toThrow(/adjacent/i);
   });
 
-  it('rejects a move when the entity is not on the submitted board', () => {
-    const entity = makeEntity('piece-P1', 'P1', 'TL0', 1, 'N');
-    const board1 = makeBoard('TL0', 1, { entities: [entity] });
+  it('rejects a move when the piece is not on the submitted board', () => {
+    const store = new MockPieceStore();
+    // Piece is at T=1 but action is submitted for T=2
+    store.initGame('test-game', [makePiece('piece-P1', 'P1', 'TL0', 1, 'N')]);
+    const board1 = makeBoard('TL0', 1);
     const board2 = makeBoard('TL0', 2);
     const world = makeWorld([board1, board2]);
-    const state = makeState(world, ['P1'], 2);
+    const state = makeState(world, ['P1'], 2, store);
 
     const action = makeAction('move', 'P1',
       { timeline: 'TL0', turn: 2, region: 'N' },
@@ -93,10 +111,10 @@ describe('processAction — spatial move', () => {
     expect(() =>
       processAction(state, testPlugin, testTools, action,
         { timeline: TL('TL0'), turn: T(2) }, false, undefined)
-    ).toThrow(/entity not found/i);
+    ).toThrow(/piece not found/i);
   });
 
-  it('preserves entity region through advance after a move', () => {
+  it('preserves piece region through advance after a move', () => {
     const state = stateWithPieceAtN();
     const action = makeAction('move', 'P1',
       { timeline: 'TL0', turn: 1, region: 'N' },
@@ -106,13 +124,12 @@ describe('processAction — spatial move', () => {
     const movedState = processAction(state, testPlugin, testTools, action,
       { timeline: TL('TL0'), turn: T(1) }, false, undefined);
 
-    const advancedWorld = advanceAllTimelines(movedState.world);
-    const nextBoard = getBoardAt(advancedWorld, { timeline: TL('TL0'), turn: T(2) });
-    const entity = nextBoard?.entities.get(EID('piece-P1'));
+    const store = state.pieceStore as MockPieceStore;
+    advanceAllTimelines(movedState.world, store, 'test-game');
 
-    expect(entity).toBeDefined();
-    expect(entity!.location.region as string).toBe('C');
-    expect(entity!.location.turn as number).toBe(2);
+    const piece = store.getPieceLocation('test-game', PID('piece-P1'));
+    expect(piece?.region as string).toBe('C');
+    expect(piece?.turn).toBe(2);
   });
 });
 
@@ -121,18 +138,19 @@ describe('processAction — spatial move', () => {
 // ---------------------------------------------------------------------------
 
 describe('processAction — move_to_past', () => {
-  it('removes the entity from the source (present) board', () => {
+  it('removes the piece from the source (present) board in the store', () => {
     const state = stateForTimeTravelFrom2To1();
     const action = makeAction('move_to_past', 'P1',
       { timeline: 'TL0', turn: 2, region: 'N' },
       { timeline: 'TL0', turn: 1, region: 'C' },
       'piece-P1',
     );
-    const next = processAction(state, testPlugin, testTools, action,
+    processAction(state, testPlugin, testTools, action,
       { timeline: TL('TL0'), turn: T(2) }, false, undefined);
 
-    const sourceBoard = getBoardAt(next.world, { timeline: TL('TL0'), turn: T(2) });
-    expect(sourceBoard?.entities.has(EID('piece-P1'))).toBe(false);
+    const store = state.pieceStore as MockPieceStore;
+    const sourcePieces = store.getPiecesOnBoard('test-game', 'TL0', 2);
+    expect(sourcePieces.find((p) => p.realPieceId === PID('piece-P1'))).toBeUndefined();
   });
 
   it('creates a new in-stabilization timeline at the destination', () => {
@@ -149,7 +167,7 @@ describe('processAction — move_to_past', () => {
     expect(inWindow.length).toBe(1);
   });
 
-  it('places the entity on the stabilization board at the destination region', () => {
+  it('places the traveler on the stabilization board at the destination region', () => {
     const state = stateForTimeTravelFrom2To1();
     const action = makeAction('move_to_past', 'P1',
       { timeline: 'TL0', turn: 2, region: 'N' },
@@ -160,17 +178,13 @@ describe('processAction — move_to_past', () => {
       { timeline: TL('TL0'), turn: T(2) }, false, undefined);
 
     const [node] = stabilizationTimelines(next);
-    // Board is at originAddress.turn (T=1), not T=2
-    const newBoard = getBoardAt(next.world, { timeline: node!.timelineId, turn: T(1) });
-    // Entity arrives under a new ID (bootstrap paradox); find by owner + region
-    const arrived = [...(newBoard?.entities.values() ?? [])].find(
-      (e) => e.owner === 'P1' && (e.location.region as string) === 'C',
-    );
+    const store = state.pieceStore as MockPieceStore;
+    const pieces = store.getPiecesOnBoard('test-game', node!.timelineId as string, 1);
+    const arrived = pieces.find((p) => (p.owner as string) === 'P1' && (p.region as string) === 'C');
     expect(arrived).toBeDefined();
   });
 
   it('new timeline board is placed at originAddress.turn (not +1)', () => {
-    // Piece at T=2 travels to origin T=1. New timeline board should appear at T=1 (origin turn).
     const state = stateForTimeTravelFrom2To1();
     const action = makeAction('move_to_past', 'P1',
       { timeline: 'TL0', turn: 2, region: 'N' },
@@ -215,12 +229,16 @@ describe('processAction — move_to_past', () => {
   it('does not create a second branch when a subsequent arrival occurs', () => {
     // P1 sends piece-P1 to T=1. Then P2 also sends piece-P2 to T=1.
     // Should result in exactly 1 in-stabilization timeline (not 2).
-    const e1 = makeEntity('piece-P1', 'P1', 'TL0', 2, 'N');
-    const e2 = makeEntity('piece-P2', 'P2', 'TL0', 2, 'S');
+    const store = new MockPieceStore();
+    store.initGame('test-game', [
+      makePiece('piece-P1', 'P1', 'TL0', 1, 'N'),
+      makePiece('piece-P2', 'P2', 'TL0', 1, 'S'),
+    ]);
+    store.advanceAllTimelines('test-game', [{ timeline: 'TL0', fromTurn: 1 }]);
     const board1 = makeBoard('TL0', 1);
-    const board2 = makeBoard('TL0', 2, { entities: [e1, e2] });
+    const board2 = makeBoard('TL0', 2);
     const world = makeWorld([board1, board2]);
-    const state = makeState(world, ['P1', 'P2'], 2);
+    const state = makeState(world, ['P1', 'P2'], 2, store);
 
     const action1 = makeAction('move_to_past', 'P1',
       { timeline: 'TL0', turn: 2, region: 'N' },
@@ -243,5 +261,86 @@ describe('processAction — move_to_past', () => {
     expect(stabilizationTimelines(state4).length).toBe(1);
     // Still only 1 window (same branch)
     expect(state4.windows.size).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct arrival — formation window past-board guard
+// ---------------------------------------------------------------------------
+
+describe('processAction — formation window arrival turn guard', () => {
+  // Helper: P1 travels from TL0:T2 to TL0:T1 opening TL1. Then TL0 and TL1 both advance
+  // so TL0 is at T3 and TL1 has T1 (old board) and T2 (current board) in WorldState.
+  // From TL0:T3, P2 is the active player and can attempt subsequent arrivals on TL1.
+  function stateWithTwoTurnStabilizingBranch() {
+    const store = new MockPieceStore();
+    store.initGame('test-game', [
+      makePiece('piece-P1', 'P1', 'TL0', 1, 'N'),
+      makePiece('piece-P2', 'P2', 'TL0', 1, 'S'),
+    ]);
+    store.advanceAllTimelines('test-game', [{ timeline: 'TL0', fromTurn: 1 }]);
+
+    const tl0t1 = makeBoard('TL0', 1);
+    const tl0t2 = makeBoard('TL0', 2);
+    const world0 = makeWorld([tl0t1, tl0t2]);
+    const state0 = makeState(world0, ['P1', 'P2'], 2, store);
+
+    // P1 travels from TL0:T2 to TL0:T1 → creates TL1 at T1 in stabilization
+    const action1 = makeAction('move_to_past', 'P1',
+      { timeline: 'TL0', turn: 2, region: 'N' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P1',
+    );
+    const state1 = processAction(state0, testPlugin, testTools, action1,
+      { timeline: TL('TL0'), turn: T(2) }, false, undefined);
+
+    const [node] = stabilizationTimelines(state1);
+    const newTlId = node!.timelineId as string;
+
+    // Advance TL0 T2→T3 and TL1 T1→T2 so both timelines have an extra turn in WorldState
+    store.advanceAllTimelines('test-game', [
+      { timeline: 'TL0', fromTurn: 2 },
+      { timeline: newTlId, fromTurn: 1 },
+    ]);
+    const tl0t3 = makeBoard('TL0', 3);
+    const tl1t2 = makeBoard(newTlId, 2);
+    const world1 = setBoard(setBoard(state1.world, tl0t3), tl1t2);
+
+    // Bump globalTurn to 3; P2 is now at TL0:T3 — both T1 and T2 are "past" turns
+    return {
+      state: { ...state1, world: world1, order: { ...state1.order, globalTurn: T(3) } },
+      newTlId,
+    };
+  }
+
+  it('rejects arrival at a past board of a stabilizing timeline (T1 when TL1 is now at T2)', () => {
+    const { state, newTlId } = stateWithTwoTurnStabilizingBranch();
+    // P2's turn (index 1)
+    const s = { ...state, order: { ...state.order, currentIndex: 1 } };
+
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 3, region: 'S' },
+      { timeline: newTlId, turn: 1, region: 'E' },
+      'piece-P2',
+    );
+    expect(() =>
+      processAction(s, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(3) }, false, undefined)
+    ).toThrow(/formation window/i);
+  });
+
+  it('allows arrival at the current board of a stabilizing timeline (T2)', () => {
+    const { state, newTlId } = stateWithTwoTurnStabilizingBranch();
+    const s = { ...state, order: { ...state.order, currentIndex: 1 } };
+
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 3, region: 'S' },
+      { timeline: newTlId, turn: 2, region: 'E' },
+      'piece-P2',
+    );
+    expect(() =>
+      processAction(s, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(3) }, false, undefined)
+    ).not.toThrow();
   });
 });
