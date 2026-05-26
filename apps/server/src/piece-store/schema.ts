@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS historical_snapshots (
   type          TEXT    NOT NULL,
   disambiguator INTEGER NOT NULL DEFAULT 0,
   data          TEXT    NOT NULL DEFAULT '{}',
+  real_piece_id TEXT,
   PRIMARY KEY (game_id, timeline, turn, region, owner, type, disambiguator)
 );
 

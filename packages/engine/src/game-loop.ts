@@ -95,6 +95,25 @@ export function processAction(
     destNodeForChecks?.inStabilizationPeriod === true &&
     destNodeForChecks.parentTimelineId === (address.timeline as string);
 
+  // For direct arrivals, validate that the target turn is the latest board on the destination
+  // timeline. A stabilizing timeline may have accumulated multiple boards (e.g. T1 and T2)
+  // via advanceAllTimelines; only the current (latest) board accepts new arrivals.
+  if (isDirectArrivalFromParent) {
+    let latestDestTurn = -Infinity;
+    for (const [, board] of state.world.boards) {
+      if ((board.address.timeline as string) === (action.to.timeline as string)) {
+        const t = board.address.turn as number;
+        if (t > latestDestTurn) latestDestTurn = t;
+      }
+    }
+    if ((action.to.turn as number) !== latestDestTurn) {
+      throw new Error(
+        `Cannot arrive at ${action.to.timeline as string}:T${action.to.turn as number} during its formation window — ` +
+        `only the current board T${latestDestTurn} accepts new arrivals`,
+      );
+    }
+  }
+
   // Cross-board checks only apply when action.to refers to a different board than the
   // submitted-on board. Intra-board actions (e.g. spatial moves) must not be subject
   // to time-travel or reachability checks.
@@ -156,9 +175,12 @@ export function processAction(
   const directStabilizingNode = branchTree.nodes[action.to.timeline as string];
   if (result.success && directStabilizingNode?.inStabilizationPeriod) {
     if (movingPiece && movingPieceLoc && state.pieceStore) {
-      const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
+      // Remove from source first, then re-add at destination with the SAME ID.
+      // Preserving the original ID lets the client trace the piece's full path
+      // across time-travel jumps via historical snapshots.
+      state.pieceStore.removePiece(state.gameId, movingPiece.id);
       state.pieceStore.addPiece(state.gameId,
-        { ...movingPiece, id: arrivedId },
+        movingPiece,
         { timeline: directStabilizingNode.timelineId as string,
           turn: action.to.turn as number,
           region: action.to.region,
@@ -167,7 +189,6 @@ export function processAction(
           disambiguator: 0,
         },
       );
-      state.pieceStore.removePiece(state.gameId, movingPiece.id);
     }
     // Update the dest board's parties list
     const destBoard = getBoardAt(world, { timeline: directStabilizingNode.timelineId, turn: action.to.turn as Turn });
@@ -182,12 +203,12 @@ export function processAction(
 
     if (existingBranchNode) {
       // Subsequent arrival via origin address: bootstrap-paradox duplicate — historical
-      // copy stays, arriving piece inserted under a new piece ID so both coexist.
+      // copy stays, arriving piece keeps its original ID so path tracing works.
       if (movingPiece && movingPieceLoc && state.pieceStore) {
         const stabilizationStartTurn = originAddress.turn as Turn;
-        const arrivedId = `${movingPiece.id}-arr-${action.id}` as RealPieceId;
+        state.pieceStore.removePiece(state.gameId, movingPiece.id);
         state.pieceStore.addPiece(state.gameId,
-          { ...movingPiece, id: arrivedId },
+          movingPiece,
           { timeline: existingBranchNode.timelineId as string,
             turn: stabilizationStartTurn,
             region: action.to.region,
@@ -196,7 +217,6 @@ export function processAction(
             disambiguator: 0,
           },
         );
-        state.pieceStore.removePiece(state.gameId, movingPiece.id);
       }
       // Update the dest board's parties list
       const stabilizationStartTurn = originAddress.turn as Turn;

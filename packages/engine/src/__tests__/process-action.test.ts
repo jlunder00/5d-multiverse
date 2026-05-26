@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { processAction, advanceAllTimelines } from '../game-loop.js';
-import { getBoardAt } from '../world-state.js';
+import { getBoardAt, setBoard } from '../world-state.js';
 import {
   testPlugin, testTools,
   MockPieceStore,
@@ -261,5 +261,86 @@ describe('processAction — move_to_past', () => {
     expect(stabilizationTimelines(state4).length).toBe(1);
     // Still only 1 window (same branch)
     expect(state4.windows.size).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Direct arrival — formation window past-board guard
+// ---------------------------------------------------------------------------
+
+describe('processAction — formation window arrival turn guard', () => {
+  // Helper: P1 travels from TL0:T2 to TL0:T1 opening TL1. Then TL0 and TL1 both advance
+  // so TL0 is at T3 and TL1 has T1 (old board) and T2 (current board) in WorldState.
+  // From TL0:T3, P2 is the active player and can attempt subsequent arrivals on TL1.
+  function stateWithTwoTurnStabilizingBranch() {
+    const store = new MockPieceStore();
+    store.initGame('test-game', [
+      makePiece('piece-P1', 'P1', 'TL0', 1, 'N'),
+      makePiece('piece-P2', 'P2', 'TL0', 1, 'S'),
+    ]);
+    store.advanceAllTimelines('test-game', [{ timeline: 'TL0', fromTurn: 1 }]);
+
+    const tl0t1 = makeBoard('TL0', 1);
+    const tl0t2 = makeBoard('TL0', 2);
+    const world0 = makeWorld([tl0t1, tl0t2]);
+    const state0 = makeState(world0, ['P1', 'P2'], 2, store);
+
+    // P1 travels from TL0:T2 to TL0:T1 → creates TL1 at T1 in stabilization
+    const action1 = makeAction('move_to_past', 'P1',
+      { timeline: 'TL0', turn: 2, region: 'N' },
+      { timeline: 'TL0', turn: 1, region: 'C' },
+      'piece-P1',
+    );
+    const state1 = processAction(state0, testPlugin, testTools, action1,
+      { timeline: TL('TL0'), turn: T(2) }, false, undefined);
+
+    const [node] = stabilizationTimelines(state1);
+    const newTlId = node!.timelineId as string;
+
+    // Advance TL0 T2→T3 and TL1 T1→T2 so both timelines have an extra turn in WorldState
+    store.advanceAllTimelines('test-game', [
+      { timeline: 'TL0', fromTurn: 2 },
+      { timeline: newTlId, fromTurn: 1 },
+    ]);
+    const tl0t3 = makeBoard('TL0', 3);
+    const tl1t2 = makeBoard(newTlId, 2);
+    const world1 = setBoard(setBoard(state1.world, tl0t3), tl1t2);
+
+    // Bump globalTurn to 3; P2 is now at TL0:T3 — both T1 and T2 are "past" turns
+    return {
+      state: { ...state1, world: world1, order: { ...state1.order, globalTurn: T(3) } },
+      newTlId,
+    };
+  }
+
+  it('rejects arrival at a past board of a stabilizing timeline (T1 when TL1 is now at T2)', () => {
+    const { state, newTlId } = stateWithTwoTurnStabilizingBranch();
+    // P2's turn (index 1)
+    const s = { ...state, order: { ...state.order, currentIndex: 1 } };
+
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 3, region: 'S' },
+      { timeline: newTlId, turn: 1, region: 'E' },
+      'piece-P2',
+    );
+    expect(() =>
+      processAction(s, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(3) }, false, undefined)
+    ).toThrow(/formation window/i);
+  });
+
+  it('allows arrival at the current board of a stabilizing timeline (T2)', () => {
+    const { state, newTlId } = stateWithTwoTurnStabilizingBranch();
+    const s = { ...state, order: { ...state.order, currentIndex: 1 } };
+
+    const action = makeAction('move_to_past', 'P2',
+      { timeline: 'TL0', turn: 3, region: 'S' },
+      { timeline: newTlId, turn: 2, region: 'E' },
+      'piece-P2',
+    );
+    expect(() =>
+      processAction(s, testPlugin, testTools, action,
+        { timeline: TL('TL0'), turn: T(3) }, false, undefined)
+    ).not.toThrow();
   });
 });

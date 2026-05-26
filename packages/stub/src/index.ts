@@ -190,19 +190,16 @@ function createInitialBoard(players: PlayerId[]): Board {
     REGIONS.map((id) => [id, { id, owner: null, data: { label: id as string } }]),
   );
 
-  // Phase 1 bridge: entities Map kept at runtime as untyped field;
-  // Board.pieces is the typed field (empty until Phase 3 populates from PieceStore).
-  const entities = new Map<string, unknown>();
-  players.forEach((player, i) => {
-    const startRegion = START_REGIONS[i % START_REGIONS.length]!;
-    const entityId = `piece-${player}`;
-    entities.set(entityId, {
-      id: entityId,
+  const pieces = players.map((player, i) => {
+    const region = START_REGIONS[i % START_REGIONS.length]!;
+    return {
+      realPieceId: `piece-${player}` as import('@5d/types').RealPieceId,
       owner: player,
-      type: 'piece',
-      location: { timeline, turn, region: startRegion },
+      type: 'piece' as import('@5d/types').UnitTypeId,
+      region,
+      disambiguator: 0,
       data: { label: `${player}'s piece` },
-    });
+    };
   });
 
   const economies = new Map<PlayerId, Economy>(
@@ -212,13 +209,10 @@ function createInitialBoard(players: PlayerId[]): Board {
   return {
     address: { timeline, turn },
     regions,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    entities: entities as any,
-    pieces: [],
+    pieces,
     economies,
     pluginData: {},
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any as Board;
+  };
 }
 
 // ---------------------------------------------------------------------------

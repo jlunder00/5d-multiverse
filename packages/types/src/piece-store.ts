@@ -26,7 +26,7 @@ export interface BranchCreationParams {
 export interface PieceStore {
   // Board queries
   getPiecesOnBoard(gameId: string, timeline: string, turn: number): PieceInfo[];
-  getHistoricalPieces(gameId: string, timeline: string, turn: number): HistoricalPieceInfo[];
+  getHistoricalPieces(gameId: string, timeline: string, turn: number): (HistoricalPieceInfo & { realPieceId?: RealPieceId })[];
   getPieceLocation(gameId: string, realPieceId: RealPieceId): SpacetimeCoord | undefined;
   getPieceState(gameId: string, realPieceId: RealPieceId): PieceState | undefined;
 

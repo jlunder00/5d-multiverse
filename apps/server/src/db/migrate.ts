@@ -18,6 +18,7 @@ sqlite.exec(`
     execution_order TEXT NOT NULL,
     windows TEXT NOT NULL,
     winner TEXT,
+    piece_db_path TEXT NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
@@ -31,6 +32,14 @@ sqlite.exec(`
     committed_at INTEGER NOT NULL
   );
 `);
+
+// Add piece_db_path column to existing databases that predate Phase 4.
+try {
+  sqlite.exec(`ALTER TABLE games ADD COLUMN piece_db_path TEXT NOT NULL DEFAULT ''`);
+  console.log('Added piece_db_path column to games table');
+} catch {
+  // Column already exists — ignore
+}
 
 console.log('Database migrated successfully');
 sqlite.close();
